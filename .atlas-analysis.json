@@ -1,0 +1,93 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "tsim",
+  "projectDescription": "GPU-accelerated quantum circuit sampler supporting non-Clifford gates via ZX-calculus stabilizer rank decomposition",
+  "theme": "aspen",
+  "primaryColor": "#b21e1e",
+  "lightColor": "#e59f82",
+  "darkColor": "#e0dbd9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/circuits",
+              "concepts/samplers",
+              "concepts/instructions",
+              "concepts/zx-calculus"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/migration-from-stim",
+              "guides/non-clifford-gates",
+              "guides/noise-models",
+              "guides/gpu-acceleration"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/encoding-demo",
+              "examples/magic-state-distillation",
+              "examples/stim-to-tsim"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/circuit",
+              "api/compiled-measurement-sampler",
+              "api/compiled-detector-sampler"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "api/modules/core",
+              "api/modules/compile",
+              "api/modules/noise",
+              "api/modules/utils"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Stim-compatible API with non-Clifford gate support",
+    "GPU-accelerated sampling via JAX",
+    "ZX-calculus stabilizer rank decomposition",
+    "Support for T, T_DAG, R_X, R_Y, R_Z, and U3 gates",
+    "Pauli noise channels and detector error models",
+    "Efficient sampling from Clifford+T circuits"
+  ],
+  "publicApiSurface": [
+    "Circuit",
+    "CompiledMeasurementSampler",
+    "CompiledDetectorSampler",
+    "Circuit.compile_detector_sampler()",
+    "Circuit.compile_measurement_sampler()",
+    "Circuit.append()",
+    "Circuit.detector_error_model()",
+    "CompiledDetectorSampler.sample()",
+    "CompiledMeasurementSampler.sample()"
+  ]
+}
