@@ -1,0 +1,634 @@
+---
+title: 'tsim.core'
+description: 'Core ZX graph construction, data types, and parsing'
+---
+
+The `tsim.core` module provides the fundamental building blocks for ZX graph construction, manipulation, and circuit parsing.
+
+## Overview
+
+This module contains:
+- **graph**: ZX graph construction and manipulation
+- **parse**: Stim circuit parsing to ZX graphs
+- **instructions**: Gate implementations and graph representations
+- **types**: Core data types for compilation pipeline
+- **exact_scalar**: Exact arithmetic for ZX-calculus phases
+
+---
+
+## tsim.core.graph
+
+ZX graph construction, manipulation, and preparation for sampling.
+
+### Key Functions
+
+#### `prepare_graph`
+
+```python
+def prepare_graph(circuit: Circuit, *, sample_detectors: bool) -> SamplingGraph
+```
+
+Prepare a circuit for compilation. This is the main entry point for graph preparation.
+
+**Pipeline:**
+1. Parse the stim circuit into a ZX graph
+2. Build the sampling graph (compose with adjoint, add outputs)
+3. Reduce the graph via `zx.full_reduce`
+4. Transform error basis via Gaussian elimination (e → f)
+5. Clear the scalar
+
+**Parameters:**
+- `circuit`: The quantum circuit to prepare
+- `sample_detectors`: If True, prepare for detector sampling; if False, prepare for measurement sampling
+
+**Returns:** `SamplingGraph` containing the reduced graph and error transformation
+
+**Source:** [graph.py:442](/home/daytona/workspace/source/src/tsim/core/graph.py#L442)
+
+---
+
+#### `build_sampling_graph`
+
+```python
+def build_sampling_graph(
+    built: GraphRepresentation, 
+    sample_detectors: bool = False
+) -> BaseGraph
+```
+
+Build a ZX graph for sampling from a GraphRepresentation.
+
+**Process:**
+- Initializes boundary vertices to the 0 state
+- Composes graph with its adjoint
+- Connects measurement vertices
+- Adds detector/observable outputs or measurement outputs
+
+**Parameters:**
+- `built`: GraphRepresentation from circuit parsing
+- `sample_detectors`: If True, sample detectors; if False, sample measurements
+
+**Returns:** ZX graph ready for reduction and compilation
+
+**Source:** [graph.py:146](/home/daytona/workspace/source/src/tsim/core/graph.py#L146)
+
+---
+
+#### `connected_components`
+
+```python
+def connected_components(g: BaseGraph) -> list[ConnectedComponent]
+```
+
+Return each connected component of a graph as its own ZX subgraph.
+
+Each component is packaged inside a `ConnectedComponent` that contains the subgraph and a list of output indices matching the original output indices.
+
+**Parameters:**
+- `g`: The ZX graph to decompose
+
+**Returns:** List of connected components with their output indices
+
+**Source:** [graph.py:35](/home/daytona/workspace/source/src/tsim/core/graph.py#L35)
+
+---
+
+#### `transform_error_basis`
+
+```python
+def transform_error_basis(
+    g: BaseGraph, 
+    num_e: int | None = None
+) -> tuple[BaseGraph, np.ndarray]
+```
+
+Transform phase variables from the original 'e' basis to a reduced 'f' basis.
+
+Finds a linearly independent basis for phase variables and transforms them via Gaussian elimination. Original variables (e0, e1, ...) are mapped to a smaller set (f0, f1, ...).
+
+**Parameters:**
+- `g`: A ZX graph with phase variables attached to vertices
+- `num_e`: Total number of e-variables (if provided, pads matrix to this size)
+
+**Returns:** Tuple of (modified graph, binary transformation matrix)
+- Matrix shape: `(num_f, num_e)` where entry `[i, j] = 1` means `f_i` depends on `e_j`
+- Example: If row 0 is `[0, 1, 0, 1]`, then `f0 = e1 XOR e3`
+
+**Source:** [graph.py:253](/home/daytona/workspace/source/src/tsim/core/graph.py#L253)
+
+---
+
+#### `get_params`
+
+```python
+def get_params(g: BaseGraph) -> set[str]
+```
+
+Get all parameter variables that appear in the graph and its scalar.
+
+Collects variables from:
+- Vertex phases (`g._phaseVars`)
+- Scalar phase variables (phasevars_pi, phasevars_pi_pair, phasevars_halfpi)
+- Scalar phase pairs
+- Scalar phase nodes
+
+**Parameters:**
+- `g`: A ZX graph with parametrized phases
+
+**Returns:** Set of all variable names (e.g., `{'f0', 'f2', 'm1'}`)
+
+**Source:** [graph.py:387](/home/daytona/workspace/source/src/tsim/core/graph.py#L387)
+
+---
+
+### Utility Functions
+
+<Accordion title="squash_graph">
+```python
+def squash_graph(g: BaseGraph) -> None
+```
+
+Compact the graph by placing vertices underneath their output connections.
+
+Starting from output vertices, each vertex is placed directly underneath (same row, qubit - 1) its already-placed neighbor via BFS traversal.
+
+**Source:** [graph.py:309](/home/daytona/workspace/source/src/tsim/core/graph.py#L309)
+</Accordion>
+
+<Accordion title="evaluate_graph">
+```python
+def evaluate_graph(g: GraphS, vals: dict[str, Fraction] | None = None) -> np.ndarray
+```
+
+Evaluate a ZX graph to a tensor with given parameter values.
+
+**Parameters:**
+- `g`: GraphS with parametrized vertices
+- `vals`: Parameter value assignments (defaults to all zeros)
+
+**Returns:** Numpy array containing the evaluated tensor
+
+**Source:** [graph.py:372](/home/daytona/workspace/source/src/tsim/core/graph.py#L372)
+</Accordion>
+
+<Accordion title="scale_horizontally">
+```python
+def scale_horizontally(g: BaseGraph, scale: float) -> None
+```
+
+Scale horizontal positions of graph vertices by a factor.
+
+**Parameters:**
+- `g`: A ZX graph
+- `scale`: The scaling factor
+
+**Source:** [graph.py:430](/home/daytona/workspace/source/src/tsim/core/graph.py#L430)
+</Accordion>
+
+---
+
+### Data Classes
+
+#### `ConnectedComponent`
+
+```python
+@dataclass
+class ConnectedComponent:
+    graph: BaseGraph
+    output_indices: list[int]
+```
+
+A connected subgraph with its associated output indices.
+
+**Source:** [graph.py:27](/home/daytona/workspace/source/src/tsim/core/graph.py#L27)
+
+---
+
+## tsim.core.parse
+
+Parser for converting Stim circuits to ZX graph representations.
+
+### Main Function
+
+#### `parse_stim_circuit`
+
+```python
+def parse_stim_circuit(stim_circuit: stim.Circuit) -> GraphRepresentation
+```
+
+Parse a Stim circuit into a GraphRepresentation.
+
+Supports:
+- All Clifford gates (H, S, CNOT, CZ, SWAP, etc.)
+- Non-Clifford gates (T, parametric rotations)
+- Measurements (M, MX, MY, MPP)
+- Resets (R, RX, RY)
+- Noise channels (depolarizing, Pauli channels, correlated errors)
+- Annotations (DETECTOR, OBSERVABLE_INCLUDE, TICK)
+
+**Parameters:**
+- `stim_circuit`: The Stim circuit to convert
+
+**Returns:** `GraphRepresentation` containing the ZX graph and auxiliary data
+
+**Source:** [parse.py:61](/home/daytona/workspace/source/src/tsim/core/parse.py#L61)
+
+---
+
+#### `parse_parametric_tag`
+
+```python
+def parse_parametric_tag(tag: str) -> tuple[str, dict[str, Fraction]] | None
+```
+
+Parse a parametric gate tag like `R_Z(theta=0.3*pi)`.
+
+**Supported gates:** R_Z, R_X, R_Y, U3
+
+**Parameters:**
+- `tag`: The instruction tag to parse
+
+**Returns:** Tuple of `(gate_name, params_dict)` or None if invalid
+
+**Example:**
+```python
+parse_parametric_tag("R_Z(theta=0.3*pi)")
+# Returns: ("R_Z", {"theta": Fraction(3, 10)})
+
+parse_parametric_tag("U3(theta=0.3*pi, phi=0.24*pi, lambda=0.49*pi)")
+# Returns: ("U3", {"theta": Fraction(3, 10), "phi": Fraction(6, 25), ...})
+```
+
+**Source:** [parse.py:25](/home/daytona/workspace/source/src/tsim/core/parse.py#L25)
+
+---
+
+## tsim.core.instructions
+
+ZX graph representations of quantum gates and instructions.
+
+### GraphRepresentation
+
+```python
+@dataclass
+class GraphRepresentation:
+    graph: GraphS
+    rec: list[int]
+    silent_rec: list[int]
+    detectors: list[int]
+    observables_dict: dict[int, int]
+    first_vertex: dict[int, int]
+    last_vertex: dict[int, int]
+    channel_probs: list[np.ndarray]
+    correlated_error_probs: list[float]
+    num_error_bits: int = 0
+    num_correlated_error_bits: int = 0
+```
+
+ZX graph built from a Stim circuit, containing the graph and all auxiliary data needed for sampling.
+
+**Source:** [instructions.py:21](/home/daytona/workspace/source/src/tsim/core/instructions.py#L21)
+
+---
+
+### Gate Categories
+
+<Accordion title="Non-Clifford Gates">
+
+#### Rotation Gates
+
+- `r_z(b, qubit, phase)`: R_Z rotation gate (Z-axis)
+- `r_x(b, qubit, phase)`: R_X rotation gate (X-axis)
+- `r_y(b, qubit, phase)`: R_Y rotation gate (Y-axis)
+- `u3(b, qubit, theta, phi, lambda_)`: U3 gate: U3(θ,φ,λ) = R_Z(φ)·R_Y(θ)·R_Z(λ)
+
+#### T Gates
+
+- `t(b, qubit)`: T gate (π/4 Z rotation)
+- `t_dag(b, qubit)`: T† gate (-π/4 Z rotation)
+
+**Source:** [instructions.py:87-151](/home/daytona/workspace/source/src/tsim/core/instructions.py#L87)
+
+</Accordion>
+
+<Accordion title="Pauli Gates">
+
+- `i(b, qubit)`: Identity (advances the row)
+- `x(b, qubit)`: Pauli X gate
+- `y(b, qubit)`: Pauli Y gate  
+- `z(b, qubit)`: Pauli Z gate
+
+**Source:** [instructions.py:154-179](/home/daytona/workspace/source/src/tsim/core/instructions.py#L154)
+
+</Accordion>
+
+<Accordion title="Single-Qubit Clifford Gates">
+
+- `h(b, qubit)`: Hadamard gate
+- `h_xy(b, qubit)`: Hadamard variant (swaps X and Y axes)
+- `h_yz(b, qubit)`: Hadamard variant (swaps Y and Z axes)
+- `s(b, qubit)`: S gate (π/2 Z rotation)
+- `s_dag(b, qubit)`: S† gate
+- `sqrt_x(b, qubit)`: √X gate (π/2 X rotation)
+- `sqrt_x_dag(b, qubit)`: √X† gate
+- `sqrt_y(b, qubit)`: √Y gate
+- `sqrt_y_dag(b, qubit)`: √Y† gate
+- `c_xyz(b, qubit)`: Period-3 axis cycling (X→Y→Z→X)
+- `c_zyx(b, qubit)`: Period-3 axis cycling (Z→Y→X→Z)
+
+**Source:** [instructions.py:182-271](/home/daytona/workspace/source/src/tsim/core/instructions.py#L182)
+
+</Accordion>
+
+<Accordion title="Two-Qubit Gates">
+
+#### Standard Two-Qubit Gates
+
+- `cnot(b, control, target)`: CNOT (controlled-X)
+- `cz(b, control, target)`: Controlled-Z
+- `cy(b, control, target)`: Controlled-Y
+- `swap(b, qubit1, qubit2)`: SWAP gate
+- `iswap(b, qubit1, qubit2)`: iSWAP gate
+- `iswap_dag(b, qubit1, qubit2)`: iSWAP† gate
+
+#### Parameterized Two-Qubit Gates
+
+- `sqrt_xx(b, q1, q2)`: Phases -1 eigenspace of XX by i
+- `sqrt_yy(b, q1, q2)`: Phases -1 eigenspace of YY by i
+- `sqrt_zz(b, q1, q2)`: Phases -1 eigenspace of ZZ by i
+- `sqrt_xx_dag(b, q1, q2)`, `sqrt_yy_dag(b, q1, q2)`, `sqrt_zz_dag(b, q1, q2)`: Dagger variants
+
+#### Alternative Basis Controlled Gates
+
+- `xcx(b, control, target)`: X-controlled X (control in |-> state)
+- `xcy(b, control, target)`: X-controlled Y
+- `xcz(b, control, target)`: X-controlled Z
+- `ycx(b, control, target)`: Y-controlled X (control in |-i> state)
+- `ycy(b, control, target)`: Y-controlled Y
+- `ycz(b, control, target)`: Y-controlled Z
+
+**Source:** [instructions.py:274-499](/home/daytona/workspace/source/src/tsim/core/instructions.py#L274)
+
+</Accordion>
+
+<Accordion title="Noise Channels">
+
+#### Pauli Channels
+
+- `pauli_channel_1(b, qubit, px, py, pz)`: Single-qubit Pauli channel
+- `pauli_channel_2(b, q_i, q_j, pix, piy, ...)`: Two-qubit Pauli channel (15 parameters)
+- `depolarize1(b, qubit, p)`: Single-qubit depolarizing (p/3 for each Pauli)
+- `depolarize2(b, q_i, q_j, p)`: Two-qubit depolarizing (p/15 for each)
+
+#### Single Pauli Errors
+
+- `x_error(b, qubit, p)`: X error with probability p
+- `y_error(b, qubit, p)`: Y error with probability p
+- `z_error(b, qubit, p)`: Z error with probability p
+
+#### Correlated Errors
+
+- `correlated_error(b, qubits, types, p)`: Multi-qubit correlated error
+- `finalize_correlated_error(b)`: Finalize correlated error channel
+
+**Source:** [instructions.py:502-663](/home/daytona/workspace/source/src/tsim/core/instructions.py#L502)
+
+</Accordion>
+
+<Accordion title="Measurements and Resets">
+
+#### Measurements
+
+- `m(b, qubit, p, invert)`: Z-basis measurement
+- `mx(b, qubit, p, invert)`: X-basis measurement
+- `my(b, qubit, p, invert)`: Y-basis measurement
+- `mpp(b, paulis, invert)`: Pauli product measurement
+
+#### Demolition Measurements (Measure + Reset)
+
+- `mr(b, qubit, p, invert)`: Z-basis demolition measurement
+- `mrx(b, qubit, p, invert)`: X-basis demolition measurement
+- `mry(b, qubit, p, invert)`: Y-basis demolition measurement
+
+#### Resets
+
+- `r(b, qubit)`: Z-basis reset to |0>
+- `rx(b, qubit)`: X-basis reset to |+>
+- `ry(b, qubit)`: Y-basis reset to |i>
+
+**Source:** [instructions.py:666-835](/home/daytona/workspace/source/src/tsim/core/instructions.py#L666)
+
+</Accordion>
+
+<Accordion title="Annotations">
+
+- `detector(b, rec)`: Add detector annotation (XORs measurement record bits)
+- `observable_include(b, rec, idx)`: Add observable annotation
+- `tick(b)`: Align all qubits to same row
+
+**Source:** [instructions.py:838-880](/home/daytona/workspace/source/src/tsim/core/instructions.py#L838)
+
+</Accordion>
+
+---
+
+### GATE_TABLE
+
+```python
+GATE_TABLE: dict[str, tuple[Callable[..., None], int]]
+```
+
+Dispatch table mapping Stim gate names to their implementation functions and number of qubits.
+
+**Example entries:**
+```python
+"H": (h, 1)
+"CNOT": (cnot, 2)
+"T": (t, 1)
+"DEPOLARIZE1": (depolarize1, 1)
+```
+
+**Source:** [instructions.py:886](/home/daytona/workspace/source/src/tsim/core/instructions.py#L886)
+
+---
+
+## tsim.core.types
+
+Core data types for the tsim compilation and sampling pipeline.
+
+### SamplingGraph
+
+```python
+@dataclass(frozen=True)
+class SamplingGraph:
+    graph: BaseGraph
+    error_transform: np.ndarray
+    channel_probs: list[np.ndarray]
+    num_outputs: int
+    num_detectors: int
+```
+
+Result of the graph preparation phase for sampling.
+
+Represents a circuit that has been:
+1. Parsed from Stim format
+2. Converted to a ZX graph
+3. Doubled (composed with adjoint)
+4. Reduced via `zx.full_reduce`
+5. Had its error basis transformed (e → f)
+
+**Attributes:**
+- `graph`: The prepared ZX graph with f-parameters
+- `error_transform`: Binary matrix `(num_f, num_e)` where `[i,j]=1` means f_i depends on e_j
+- `channel_probs`: List of probability arrays for error channels
+- `num_outputs`: Number of output vertices
+- `num_detectors`: Number of detector vertices
+
+**Source:** [types.py:26](/home/daytona/workspace/source/src/tsim/core/types.py#L26)
+
+---
+
+### CompiledComponent
+
+```python
+class CompiledComponent(eqx.Module):
+    output_indices: tuple[int, ...]
+    f_selection: Array
+    compiled_scalar_graphs: tuple[CompiledScalarGraphs, ...]
+```
+
+A single compiled connected component of a circuit.
+
+Each component is independent and can be sampled separately. Results are combined according to `output_indices`.
+
+**Attributes:**
+- `output_indices`: Which global output indices this component owns
+- `f_selection`: Indices into global f_params array, shape `(num_f_for_component,)`
+- `compiled_scalar_graphs`: Compiled circuits for sampling
+  - Sequential mode: `[0]` = normalization, `[i]` = first i outputs plugged
+  - Joint mode: `[0]` = normalization, `[1]` = all outputs plugged
+
+**Source:** [types.py:55](/home/daytona/workspace/source/src/tsim/core/types.py#L55)
+
+---
+
+### CompiledProgram
+
+```python
+@dataclass(frozen=True)
+class CompiledProgram:
+    components: tuple[CompiledComponent, ...]
+    output_order: Array
+    num_outputs: int
+    num_f_params: int
+    num_detectors: int
+```
+
+A fully compiled circuit program ready for sampling.
+
+**Attributes:**
+- `components`: The compiled components, sorted by number of outputs
+- `output_order`: Array for reordering component outputs to final order
+  - Usage: `final_samples = combined[:, np.argsort(output_order)]`
+- `num_outputs`: Total number of outputs across all components
+- `num_f_params`: Total number of f-parameters
+- `num_detectors`: Number of detector outputs
+
+**Source:** [types.py:80](/home/daytona/workspace/source/src/tsim/core/types.py#L80)
+
+---
+
+## tsim.core.exact_scalar
+
+Exact scalar arithmetic for ZX-calculus phase computations.
+
+### Overview
+
+Implements exact arithmetic for complex numbers of the form:
+
+```
+(a + b·e^(iπ/4) + c·i + d·e^(-iπ/4)) × 2^power
+```
+
+This representation enables exact computation without floating-point errors.
+
+---
+
+### ExactScalarArray
+
+```python
+class ExactScalarArray(eqx.Module):
+    coeffs: Array  # shape (..., 4)
+    power: Array   # shape (...,)
+```
+
+Exact scalar array using dyadic representation.
+
+Represents values of the form `(c₀ + c₁·ω + c₂·ω² + c₃·ω³) × 2^power` where `ω = e^(iπ/4)`.
+
+**Methods:**
+
+<Accordion title="__init__">
+```python
+def __init__(self, coeffs: Array, power: Array | None = None)
+```
+
+Initialize from coefficients and optional power.
+
+**Parameters:**
+- `coeffs`: Array of shape `(..., 4)` containing dyadic coefficients
+- `power`: Array of powers of 2 (defaults to zeros)
+
+</Accordion>
+
+<Accordion title="__mul__">
+```python
+def __mul__(self, other: ExactScalarArray) -> ExactScalarArray
+```
+
+Element-wise multiplication of two exact scalar arrays.
+
+</Accordion>
+
+<Accordion title="reduce">
+```python
+def reduce(self) -> ExactScalarArray
+```
+
+Reduce power by dividing coefficients by 2 while they are all even.
+
+</Accordion>
+
+<Accordion title="sum">
+```python
+def sum(self) -> ExactScalarArray
+```
+
+Sum elements along axis -2, aligning powers to minimum before summing.
+
+</Accordion>
+
+<Accordion title="prod">
+```python
+def prod(self, axis: int = -1) -> ExactScalarArray
+```
+
+Compute product along specified axis using associative scan.
+
+**Parameters:**
+- `axis`: The axis along which to compute the product
+
+**Returns:** ExactScalarArray with product computed along the axis
+
+</Accordion>
+
+<Accordion title="to_complex">
+```python
+def to_complex(self) -> jax.Array
+```
+
+Convert to complex number with floating-point representation.
+
+</Accordion>
+
+**Source:** [exact_scalar.py:47](/home/daytona/workspace/source/src/tsim/core/exact_scalar.py#L47)

@@ -1,0 +1,455 @@
+---
+title: 'tsim.compile'
+description: 'JAX compilation pipeline for ZX diagrams and stabilizer rank decomposition'
+---
+
+The `tsim.compile` module handles the compilation of ZX graphs into JAX-compatible data structures for efficient sampling.
+
+## Overview
+
+This module contains:
+- **compile**: Compilation of ZX graphs into JAX arrays
+- **evaluate**: Fast evaluation of compiled scalar graphs
+- **pipeline**: Full compilation pipeline from prepared graphs to executable programs
+- **stabrank**: Stabilizer rank decomposition for non-Clifford circuits
+
+---
+
+## tsim.compile.compile
+
+Compilation of ZX graphs into JAX-compatible data structures.
+
+### CompiledScalarGraphs
+
+```python
+class CompiledScalarGraphs(eqx.Module):
+    # Metadata
+    num_graphs: int
+    n_params: int
+    
+    # Type A: Node Terms (1 + e^(iα))
+    a_const_phases: Array  # (num_graphs, max_a) uint8, values 0-7
+    a_param_bits: Array    # (num_graphs, max_a, n_params) uint8
+    a_num_terms: Array     # (num_graphs,) int32
+    
+    # Type B: Half-Pi Terms (e^(iβ))
+    b_term_types: Array    # (num_graphs, max_b) uint8, values {0,2,4,6}
+    b_param_bits: Array    # (num_graphs, max_b, n_params) uint8
+    
+    # Type C: Pi-Pair Terms ((-1)^(Ψ·Φ))
+    c_const_bits_a: Array  # (num_graphs, max_c) uint8, values {0,1}
+    c_param_bits_a: Array  # (num_graphs, max_c, n_params) uint8
+    c_const_bits_b: Array  # (num_graphs, max_c) uint8, values {0,1}
+    c_param_bits_b: Array  # (num_graphs, max_c, n_params) uint8
+    
+    # Type D: Phase Pairs (1 + e^a + e^b - e^(a+b))
+    d_const_alpha: Array   # (num_graphs, max_d) uint8, values 0-7
+    d_const_beta: Array    # (num_graphs, max_d) uint8, values 0-7
+    d_param_bits_a: Array  # (num_graphs, max_d, n_params) uint8
+    d_param_bits_b: Array  # (num_graphs, max_d, n_params) uint8
+    d_num_terms: Array     # (num_graphs,) int32
+    
+    # Static per-graph data
+    phase_indices: Array
+    has_approximate_floatfactors: bool
+    approximate_floatfactors: Array
+    power2: Array
+    floatfactor: Array
+```
+
+JAX-compatible compiled scalar graphs representation.
+
+All fields are static-shaped JAX arrays. Term arrays are 2D with shape `(num_graphs, max_terms_per_graph)` and padded with identity values for graphs with fewer terms.
+
+**Term Types:**
+
+- **Type A**: Node terms of form `(1 + e^(iα))` where α depends on constant phase and parameter parity
+- **Type B**: Half-π phase terms of form `e^(iβ)` where β is a multiple of π/2
+- **Type C**: π-pair terms of form `(-1)^(Ψ·Φ)` for independent parities Ψ and Φ  
+- **Type D**: Phase pair terms of form `(1 + e^iα + e^iβ - e^i(α+β))`
+
+**Source:** [compile.py:14](/home/daytona/workspace/source/src/tsim/compile/compile.py#L14)
+
+---
+
+### compile_scalar_graphs
+
+```python
+def compile_scalar_graphs(
+    g_list: list[BaseGraph], 
+    params: list[str]
+) -> CompiledScalarGraphs
+```
+
+Compile ZX-graph list into JAX-compatible structure for fast evaluation.
+
+**Process:**
+1. Validates all graphs are scalar graphs (no vertices)
+2. Extracts and organizes scalar terms by type (A, B, C, D)
+3. Builds static-shaped JAX arrays with appropriate padding
+4. Handles exact and approximate float factors
+
+**Parameters:**
+- `g_list`: List of ZX-graphs to compile (must be scalar graphs with no vertices)
+- `params`: List of parameter names. Each parameter corresponds to columns in the compiled circuit arrays
+
+**Returns:** `CompiledScalarGraphs` with all data in static-shaped JAX arrays
+
+**Example:**
+```python
+# After stabilizer rank decomposition
+g_list = find_stab(graph)
+params = ["f0", "f1", "m0", "m1"]
+compiled = compile_scalar_graphs(g_list, params)
+```
+
+**Source:** [compile.py:60](/home/daytona/workspace/source/src/tsim/compile/compile.py#L60)
+
+---
+
+## tsim.compile.evaluate
+
+Evaluation of compiled scalar graphs using exact arithmetic.
+
+### evaluate
+
+```python
+@jax.jit
+def evaluate(circuit: CompiledScalarGraphs, param_vals: Array) -> Array
+```
+
+Evaluate compiled circuit with batched parameter values.
+
+**Process:**
+1. Evaluates Type A terms: `(1 + e^(iα))` products
+2. Evaluates Type B terms: `e^(iβ)` sum
+3. Evaluates Type C terms: `(-1)^(Ψ·Φ)` product
+4. Evaluates Type D terms: `(1 + e^a + e^b - e^(a+b))` products
+5. Combines all terms with static phases and float factors
+6. Returns exact scalar sum or approximate result
+
+**Parameters:**
+- `circuit`: Compiled circuit representation
+- `param_vals`: Binary parameter values (error bits + measurement/detector outcomes), shape `(batch_size, n_params)`
+
+**Returns:** Complex array of shape `(batch_size,)` containing amplitudes
+
+**Performance:** This function is JIT-compiled and highly optimized for batched evaluation.
+
+**Source:** [evaluate.py:56](/home/daytona/workspace/source/src/tsim/compile/evaluate.py#L56)
+
+---
+
+## tsim.compile.pipeline
+
+Compilation pipeline from prepared graphs to executable programs.
+
+### compile_program
+
+```python
+def compile_program(
+    prepared: SamplingGraph,
+    *,
+    mode: DecompositionMode,
+) -> CompiledProgram
+```
+
+Compile a prepared graph into an executable sampling program.
+
+**Pipeline:**
+1. Split the graph into connected components
+2. For each component:
+   - Plug outputs according to mode (sequential or joint)
+   - Reduce each plugged graph
+   - Perform stabilizer rank decomposition
+   - Compile into `CompiledScalarGraphs` objects
+3. Assemble into `CompiledProgram` with output ordering
+
+**Parameters:**
+- `prepared`: The prepared graph from `prepare_graph()`
+- `mode`: Decomposition mode
+  - `"sequential"`: For sampling - creates `[0, 1, 2, ..., n]` circuits
+  - `"joint"`: For probability estimation - creates `[0, n]` circuits
+
+**Returns:** `CompiledProgram` ready for sampling
+
+**Example:**
+```python
+from tsim.core.graph import prepare_graph
+from tsim.compile.pipeline import compile_program
+
+prepared = prepare_graph(circuit, sample_detectors=False)
+program = compile_program(prepared, mode="sequential")
+```
+
+**Source:** [pipeline.py:19](/home/daytona/workspace/source/src/tsim/compile/pipeline.py#L19)
+
+---
+
+### DecompositionMode
+
+```python
+DecompositionMode = Literal["sequential", "joint"]
+```
+
+Mode for output decomposition:
+
+- **`"sequential"`**: Creates circuits for `[0, 1, 2, ..., n]` outputs plugged. Used for sequential sampling where each measurement is sampled conditioned on previous measurements.
+
+- **`"joint"`**: Creates circuits for `[0, n]` outputs plugged. Used for probability estimation where only normalization and full joint probability are needed.
+
+**Source:** [pipeline.py:16](/home/daytona/workspace/source/src/tsim/compile/pipeline.py#L16)
+
+---
+
+## tsim.compile.stabrank
+
+Stabilizer rank decomposition for non-Clifford ZX graphs.
+
+### Overview
+
+Stabilizer rank decomposition decomposes a non-Clifford ZX graph into a sum of Clifford (stabilizer) graphs. This is essential for efficient simulation of circuits with non-Clifford gates like T gates or arbitrary rotations.
+
+---
+
+### find_stab
+
+```python
+def find_stab(graph: BaseGraph) -> list[BaseGraph]
+```
+
+Decompose a ZX-graph into a sum of stabilizer components.
+
+This is the main entry point for stabilizer rank decomposition.
+
+**Process:**
+1. Fully reduces the input graph
+2. Removes U3 phases via `find_stab_u3`
+3. Decomposes T gates via magic state injection using `find_stab_magic`
+
+**Parameters:**
+- `graph`: The ZX graph to decompose
+
+**Returns:** List of scalar graphs whose sum equals the original graph
+
+**Example:**
+```python
+# Graph with 3 T gates will decompose into 8 stabilizer graphs
+g_list = find_stab(graph)  # len(g_list) = 2^3 = 8
+```
+
+**Source:** [stabrank.py:51](/home/daytona/workspace/source/src/tsim/compile/stabrank.py#L51)
+
+---
+
+### find_stab_magic
+
+```python
+def find_stab_magic(graphs: Iterable[BaseGraph]) -> list[BaseGraph]
+```
+
+Recursively decompose ZX-graphs into stabilizer components via magic-state removal.
+
+Uses Bravyi-Smith-Smolin (BSS) decomposition to remove T gates by replacing them with magic states `|T⟩` and `|T†⟩`.
+
+**Parameters:**
+- `graphs`: Iterable of ZX graphs to decompose
+
+**Returns:** List of stabilizer graphs
+
+**Reference:** S. Bravyi and A. Kitaev, "Universal quantum computation with ideal Clifford gates and noisy ancillas", Phys. Rev. A 71, 022316 (2005)
+
+**Source:** [stabrank.py:33](/home/daytona/workspace/source/src/tsim/compile/stabrank.py#L33)
+
+---
+
+### find_stab_u3
+
+```python
+def find_stab_u3(graphs: Iterable[BaseGraph]) -> list[BaseGraph]
+```
+
+Recursively decompose ZX-graphs by removing U3 phases.
+
+Handles arbitrary single-qubit rotations by decomposing them into basis states.
+
+**Parameters:**
+- `graphs`: Iterable of ZX graphs to decompose
+
+**Returns:** List of graphs with U3 phases removed
+
+**Source:** [stabrank.py:42](/home/daytona/workspace/source/src/tsim/compile/stabrank.py#L42)
+
+---
+
+## Compilation Workflow
+
+The complete compilation workflow follows these steps:
+
+```python
+from tsim import Circuit
+from tsim.core.graph import prepare_graph
+from tsim.compile.pipeline import compile_program
+from tsim.sampler import Sampler
+
+# 1. Define circuit
+circuit = Circuit("""
+    H 0
+    T 0
+    CNOT 0 1
+    M 0 1
+""")
+
+# 2. Prepare graph (parse, reduce, transform error basis)
+prepared = prepare_graph(circuit, sample_detectors=False)
+# prepared: SamplingGraph
+
+# 3. Compile to executable program
+program = compile_program(prepared, mode="sequential")
+# program: CompiledProgram
+
+# 4. Create sampler and sample
+sampler = Sampler(circuit)
+samples = sampler.sample(shots=1000)
+```
+
+### Key Stages
+
+<Accordion title="Stage 1: Graph Preparation">
+
+**Input:** Stim circuit  
+**Output:** `SamplingGraph`
+
+**Steps:**
+1. Parse circuit to ZX graph with `parse_stim_circuit`
+2. Compose with adjoint (double the diagram)
+3. Apply `zx.full_reduce` for simplification
+4. Transform error basis (e → f) via Gaussian elimination
+5. Clear scalar terms
+
+**Module:** `tsim.core.graph`
+
+</Accordion>
+
+<Accordion title="Stage 2: Component Decomposition">
+
+**Input:** `SamplingGraph`  
+**Output:** List of `ConnectedComponent`
+
+**Steps:**
+1. Identify connected components with `connected_components`
+2. Each component has independent outputs
+
+**Module:** `tsim.core.graph`
+
+</Accordion>
+
+<Accordion title="Stage 3: Output Plugging">
+
+**Input:** Connected component  
+**Output:** List of plugged graphs
+
+**Steps:**
+1. Create graphs with 0, 1, 2, ..., n outputs plugged (sequential mode)
+2. Or create graphs with 0 and n outputs plugged (joint mode)
+3. Plugged outputs become X spiders with parameter labels
+
+**Module:** `tsim.compile.pipeline`
+
+</Accordion>
+
+<Accordion title="Stage 4: Stabilizer Rank Decomposition">
+
+**Input:** Plugged ZX graph  
+**Output:** List of scalar graphs
+
+**Steps:**
+1. Remove U3 phases via state decomposition
+2. Decompose T gates via magic state injection
+3. Each T gate doubles the number of graphs (2^t terms)
+
+**Module:** `tsim.compile.stabrank`
+
+</Accordion>
+
+<Accordion title="Stage 5: JAX Compilation">
+
+**Input:** List of scalar graphs + parameter names  
+**Output:** `CompiledScalarGraphs`
+
+**Steps:**
+1. Extract scalar terms by type (A, B, C, D)
+2. Build static-shaped JAX arrays
+3. Pad arrays to uniform shape
+4. Package exact and approximate factors
+
+**Module:** `tsim.compile.compile`
+
+</Accordion>
+
+<Accordion title="Stage 6: Program Assembly">
+
+**Input:** List of `CompiledComponent`  
+**Output:** `CompiledProgram`
+
+**Steps:**
+1. Sort components by output count
+2. Build output reordering array
+3. Package metadata (num_outputs, num_f_params, etc.)
+
+**Module:** `tsim.compile.pipeline`
+
+</Accordion>
+
+---
+
+## Performance Considerations
+
+### Compilation Time
+
+Compilation time scales with:
+- **Circuit size**: Larger circuits take longer to parse and reduce
+- **T-count**: Each T gate doubles stabilizer rank (2^t graphs)
+- **Connectivity**: More connected components compile faster in parallel
+
+### Runtime Performance
+
+After compilation, sampling is highly efficient:
+- **JIT compilation**: First call compiles JAX functions
+- **Batching**: Vectorized evaluation across samples
+- **Exact arithmetic**: No floating-point errors for Clifford + T circuits
+
+### Memory Usage
+
+Memory scales with:
+- **Stabilizer rank**: 2^t graphs for t T gates
+- **Parameter count**: Arrays have shape `(num_graphs, max_terms, n_params)`
+- **Batch size**: Evaluation uses `(batch_size, n_params)` arrays
+
+---
+
+## Advanced Topics
+
+### Custom Decomposition Modes
+
+For specialized use cases, you can implement custom output plugging:
+
+```python
+def custom_plug_outputs(graph, outputs_to_plug):
+    """Create graphs with custom output configurations."""
+    graphs = []
+    for config in outputs_to_plug:
+        g = graph.copy()
+        # Custom plugging logic
+        graphs.append(g)
+    return graphs
+```
+
+### Optimizing for Large T-counts
+
+For circuits with many T gates (high stabilizer rank):
+
+1. **Component isolation**: Split circuit to isolate T gates
+2. **Approximate decomposition**: Use approximate synthesis for some T gates
+3. **Batch compilation**: Compile components in parallel
+4. **Streaming evaluation**: Process graphs in chunks to reduce memory

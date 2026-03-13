@@ -1,0 +1,395 @@
+---
+title: GPU Acceleration
+description: Enable GPU-accelerated sampling with JAX and CUDA for dramatic performance improvements
+---
+
+tsim leverages JAX to enable GPU-accelerated sampling, providing substantial speedups for large-scale circuit sampling. This guide covers installation, configuration, and best practices for GPU acceleration.
+
+## Overview
+
+tsim compiles circuits into contiguous JAX arrays that can execute efficiently on both CPU and GPU. The compilation uses just-in-time (JIT) compilation via `@jax.jit` to optimize the evaluation pipeline.
+
+Key benefits of GPU acceleration:
+- **Batch sampling**: Generate thousands of samples in parallel
+- **High-rank circuits**: Better performance for circuits with many T gates
+- **Large shot counts**: Amortized speedup with `shots > 10000`
+
+## Installation
+
+### CUDA 13 (Recommended)
+
+For systems with CUDA 13 installed:
+
+```bash
+pip install "bloqade-tsim[cuda13]"
+```
+
+Or with uv:
+
+```bash
+uv add "bloqade-tsim[cuda13]"
+```
+
+### CUDA 12
+
+For systems with CUDA 12:
+
+```bash
+pip install "bloqade-tsim[cuda12]"
+```
+
+Or with uv:
+
+```bash
+uv add "bloqade-tsim[cuda12]"
+```
+
+### CPU-Only
+
+The default installation works on CPU without GPU dependencies:
+
+```bash
+pip install bloqade-tsim
+```
+
+## Verifying GPU Access
+
+Check if JAX can see your GPU:
+
+```python
+import jax
+
+print("Devices:", jax.devices())
+print("Default device:", jax.devices()[0])
+```
+
+Expected output with GPU:
+```
+Devices: [cuda(id=0)]
+Default device: cuda(id=0)
+```
+
+For CPU-only systems:
+```
+Devices: [cpu(id=0)]
+Default device: cpu(id=0)
+```
+
+## Basic Usage
+
+No code changes are needed - tsim automatically uses GPU when available:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0
+    T 0
+    DEPOLARIZE1(0.01) 0
+    H 0
+    M 0
+    """
+)
+sampler = c.compile_sampler()
+
+# Automatically uses GPU if available
+samples = sampler.sample(shots=10000)
+```
+
+## JAX Configuration
+
+### Device Selection
+
+Force JAX to use a specific device:
+
+```python
+import jax
+import tsim
+
+# Force CPU
+with jax.default_device(jax.devices('cpu')[0]):
+    c = tsim.Circuit("H 0\nM 0")
+    sampler = c.compile_sampler()
+    samples = sampler.sample(shots=1000)
+
+# Force GPU (if available)
+with jax.default_device(jax.devices('gpu')[0]):
+    c = tsim.Circuit("H 0\nM 0")
+    sampler = c.compile_sampler()
+    samples = sampler.sample(shots=1000)
+```
+
+### Memory Management
+
+Control GPU memory pre-allocation:
+
+```python
+import os
+
+# Allocate 75% of GPU memory upfront (default: 75%)
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.75'
+
+import tsim  # Import after setting environment variables
+```
+
+To disable pre-allocation (use memory on-demand):
+
+```python
+import os
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+
+import tsim
+```
+
+### 64-bit Precision
+
+Enable 64-bit floats (default is 32-bit):
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+
+import tsim
+# Now uses float64 instead of float32
+```
+
+## Performance Optimization
+
+### Batch Size Selection
+
+GPUs achieve best performance with large batch sizes:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0
+    T 0 1 2 3 4
+    H 0 1 2 3 4
+    M 0 1 2 3 4
+    """
+)
+sampler = c.compile_sampler()
+
+# Small batch: underutilizes GPU
+samples = sampler.sample(shots=100)  # Slower
+
+# Large batch: better GPU utilization
+samples = sampler.sample(shots=100000)  # Faster per sample
+```
+
+**Recommendation**: Use `shots >= 10000` for GPU acceleration to amortize kernel launch overhead.
+
+### JIT Compilation Overhead
+
+The first call to `sample()` includes JIT compilation time:
+
+```python
+import time
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0
+    T 0 1 2 3
+    H 0 1 2 3
+    M 0 1 2 3
+    """
+)
+sampler = c.compile_sampler()
+
+# First call: includes compilation time
+start = time.time()
+samples1 = sampler.sample(shots=10000)
+print(f"First call: {time.time() - start:.3f}s")  # e.g., 2.5s
+
+# Subsequent calls: compiled and cached
+start = time.time()
+samples2 = sampler.sample(shots=10000)
+print(f"Second call: {time.time() - start:.3f}s")  # e.g., 0.1s
+```
+
+For production workloads, amortize compilation cost over many samples.
+
+### Circuit Structure
+
+GPU acceleration is most effective for:
+- **High stabilizer rank**: Circuits with many T gates
+- **Many samples**: Large shot counts
+- **Parallel noise sampling**: Many independent noise channels
+
+CPU may be faster for:
+- **Pure Clifford circuits**: Minimal stabilizer rank
+- **Few samples**: `shots < 1000`
+- **Very small circuits**: Overhead dominates
+
+## Implementation Details
+
+### JAX Array Evaluation
+
+tsim compiles circuits into a `CompiledScalarGraphs` structure (see `src/tsim/compile/compile.py`) that contains:
+- Parameter bit-masks for error and measurement variables
+- Phase coefficients for ZX-calculus terms
+- Basis transformation matrices (GF(2) linear algebra)
+
+The `evaluate()` function (`src/tsim/compile/evaluate.py:56`) is JIT-compiled and operates on batched binary arrays:
+
+```python
+@jax.jit
+def evaluate(circuit: CompiledScalarGraphs, param_vals: Array) -> Array:
+    """Evaluate compiled circuit with batched parameter values.
+    
+    Args:
+        circuit: Compiled circuit representation
+        param_vals: Binary parameter values (error bits + measurement/detector outcomes),
+            shape (batch_size, n_params)
+    
+    Returns:
+        A complex array of shape (batch_size,) containing the amplitudes
+    """
+    # ... (implementation uses JAX operations)
+```
+
+### Exact Arithmetic
+
+tsim uses exact arithmetic for phase calculations to maintain numerical precision. Phases are represented as multiples of ω = e^(iπ/4) using integer coefficients.
+
+Implementation: `src/tsim/core/exact_scalar.py`
+
+### GF(2) Matrix Multiplication
+
+Binary matrix operations use float32 BLAS kernels for performance:
+
+```python
+def _matmul_gf2(a: Array, b: Array) -> Array:
+    """Compute binary dot products mod 2.
+    
+    Uses float32 matmul (integer matmul does not have BLAS support on CPU)
+    then casts back to uint8.
+    """
+    # ... (from src/tsim/compile/evaluate.py:34-54)
+```
+
+## Troubleshooting
+
+### CUDA Not Found
+
+If you see "CUDA not found" warnings:
+
+1. Verify CUDA installation:
+   ```bash
+   nvidia-smi
+   nvcc --version
+   ```
+
+2. Check CUDA version matches your installation:
+   ```bash
+   python -c "import jax; print(jax.devices())"
+   ```
+
+3. Reinstall with correct CUDA version:
+   ```bash
+   pip uninstall jax jaxlib
+   pip install "bloqade-tsim[cuda13]"  # or cuda12
+   ```
+
+### Out of Memory
+
+If you encounter GPU OOM errors:
+
+1. Reduce batch size:
+   ```python
+   # Instead of one large batch
+   samples = sampler.sample(shots=1000000)  # OOM
+   
+   # Use multiple smaller batches
+   all_samples = []
+   for _ in range(10):
+       samples = sampler.sample(shots=100000)
+       all_samples.append(samples)
+   ```
+
+2. Reduce memory pre-allocation:
+   ```python
+   import os
+   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.5'  # Use 50%
+   ```
+
+3. Clear JAX cache:
+   ```python
+   jax.clear_caches()
+   ```
+
+### Slow First Compilation
+
+JIT compilation can take several seconds. This is normal and only affects the first `sample()` call.
+
+To pre-compile:
+```python
+sampler = c.compile_sampler()
+# Trigger compilation with small batch
+sampler.sample(shots=10)
+# Now fast for larger batches
+samples = sampler.sample(shots=100000)
+```
+
+## Benchmarking
+
+Compare CPU vs GPU performance:
+
+```python
+import time
+import jax
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0 1 2 3 4
+    T 0 1 2 3 4
+    H 0 1 2 3 4
+    CNOT 0 1
+    CNOT 1 2
+    CNOT 2 3
+    CNOT 3 4
+    T 0 1 2 3 4
+    M 0 1 2 3 4
+    """
+)
+
+# CPU benchmark
+with jax.default_device(jax.devices('cpu')[0]):
+    sampler_cpu = c.compile_sampler()
+    sampler_cpu.sample(shots=10)  # Warm up
+    start = time.time()
+    samples = sampler_cpu.sample(shots=100000)
+    cpu_time = time.time() - start
+    print(f"CPU: {cpu_time:.3f}s")
+
+# GPU benchmark
+if len(jax.devices('gpu')) > 0:
+    with jax.default_device(jax.devices('gpu')[0]):
+        sampler_gpu = c.compile_sampler()
+        sampler_gpu.sample(shots=10)  # Warm up
+        start = time.time()
+        samples = sampler_gpu.sample(shots=100000)
+        gpu_time = time.time() - start
+        print(f"GPU: {gpu_time:.3f}s")
+        print(f"Speedup: {cpu_time / gpu_time:.1f}x")
+```
+
+## Best Practices
+
+1. **Install CUDA support**: Use `[cuda13]` or `[cuda12]` extras for GPU access
+2. **Use large batches**: Aim for `shots >= 10000` to amortize overhead
+3. **Warm up samplers**: Call `sample(10)` once to trigger compilation
+4. **Monitor memory**: Use `nvidia-smi` to track GPU utilization
+5. **Batch across circuits**: If sampling multiple circuits, consider batching at the application level
+
+## Next Steps
+
+- Learn about [Noise Models](/guides/noise-models) for realistic error simulation
+- Explore [Non-Clifford Gates](/guides/non-clifford-gates) for T gates and rotations
+- See [API Reference](/api/circuit) for complete documentation

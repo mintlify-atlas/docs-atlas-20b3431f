@@ -1,0 +1,315 @@
+---
+title: 'Circuits'
+description: 'Learn how to construct and manipulate quantum circuits in tsim'
+---
+
+## Overview
+
+The `Circuit` class is tsim's primary interface for defining quantum circuits. It acts as a thin wrapper around `stim.Circuit` while adding support for non-Clifford gates like T, T_DAG, and parametric rotations.
+
+## Creating Circuits
+
+### From Program Text
+
+Circuits are typically constructed from Stim program text:
+
+```python
+import tsim
+
+circuit = tsim.Circuit('''
+    H 0
+    T 0
+    CNOT 0 1
+    M 0 1
+''')
+```
+
+### From a File
+
+You can load circuits from files:
+
+```python
+circuit = tsim.Circuit.from_file('my_circuit.stim')
+```
+
+### From a Stim Circuit
+
+Convert existing Stim circuits:
+
+```python
+import stim
+import tsim
+
+stim_circuit = stim.Circuit('''
+    H 0
+    CNOT 0 1
+''')
+
+tsim_circuit = tsim.Circuit.from_stim_program(stim_circuit)
+```
+
+## Adding Instructions
+
+### Using `append()`
+
+The `append()` method adds operations to your circuit:
+
+```python
+circuit = tsim.Circuit()
+
+# Single-qubit gate
+circuit.append('H', 0)
+
+# Two-qubit gate
+circuit.append('CNOT', [0, 1])
+
+# Gate with parameter (noise)
+circuit.append('X_ERROR', 0, 0.01)
+
+# Non-Clifford rotation
+circuit.append('R_X', 0, 0.5)  # Rotate by π/2
+
+# U3 gate with three parameters
+circuit.append('U3', 0, [0.5, 0.25, 0.125])
+```
+
+<Note>
+For non-Clifford gates like `T`, `T_DAG`, `R_X`, `R_Y`, `R_Z`, and `U3`, tsim automatically handles the conversion to the internal ZX-calculus representation.
+</Note>
+
+### Using `append_from_stim_program_text()`
+
+Append multiple operations at once:
+
+```python
+circuit.append_from_stim_program_text('''
+    H 0 1 2
+    CNOT 0 1
+    T 2
+    M 0 1 2
+''')
+```
+
+## Circuit Properties
+
+### Counting Resources
+
+```python
+# Number of qubits (1 + largest qubit index)
+num_qubits = circuit.num_qubits
+
+# Number of measurement operations
+num_measurements = circuit.num_measurements
+
+# Number of detectors
+num_detectors = circuit.num_detectors
+
+# Number of logical observables
+num_observables = circuit.num_observables
+
+# Number of TICK instructions
+num_ticks = circuit.num_ticks
+
+# Number of T gates (stabilizer rank indicator)
+t_count = circuit.tcount()
+```
+
+### Accessing Instructions
+
+Circuits support indexing and slicing:
+
+```python
+# Get a specific instruction
+first_instruction = circuit[0]
+
+# Get the last instruction
+last_instruction = circuit[-1]
+
+# Slice to get a sub-circuit
+sub_circuit = circuit[10:20]
+
+# Get circuit length
+num_instructions = len(circuit)
+```
+
+## Circuit Operations
+
+### Copying and Modifying
+
+```python
+# Create a copy
+copy = circuit.copy()
+
+# Flatten repeat blocks
+flattened = circuit.flattened()
+
+# Remove all noise
+noiseless = circuit.without_noise()
+
+# Remove detector annotations
+without_dets = circuit.without_annotations()
+
+# Get the inverse circuit
+inverse = circuit.inverse()
+```
+
+<Warning>
+The `inverse()` method correctly handles non-Clifford gates by negating rotation angles and reordering U3 parameters.
+</Warning>
+
+### Combining Circuits
+
+```python
+# Concatenate circuits
+combined = circuit1 + circuit2
+
+# In-place concatenation
+circuit1 += circuit2
+
+# Repeat a circuit
+repeated = circuit * 10
+repeated = 10 * circuit  # Also works
+
+# In-place repetition
+circuit *= 10
+```
+
+### Removing Instructions
+
+```python
+# Pop from end
+last = circuit.pop()
+
+# Pop from specific index
+third = circuit.pop(2)
+```
+
+## Advanced Features
+
+### Accessing the Underlying Stim Circuit
+
+```python
+# Get a copy of the stim.Circuit
+stim_circuit = circuit.stim_circuit
+
+# Cast to stim.Circuit for compatibility
+stim_circuit = circuit.cast_to_stim()
+```
+
+### Generating Diagrams
+
+Visualize your circuit:
+
+```python
+# Timeline diagram (default)
+diagram = circuit.diagram(type='timeline-svg')
+
+# ZX-calculus diagram
+zx_diagram = circuit.diagram(type='pyzx')
+
+# Detector sampling graph
+det_diagram = circuit.diagram(type='pyzx-dets')
+
+# Time slice at specific tick
+slice_diagram = circuit.diagram(type='timeslice-svg', tick=5)
+```
+
+### Getting ZX Graphs
+
+```python
+# Get the ZX graph representation
+graph = circuit.get_graph()
+
+# Get sampling graph for measurements
+meas_graph = circuit.get_sampling_graph(sample_detectors=False)
+
+# Get sampling graph for detectors
+det_graph = circuit.get_sampling_graph(sample_detectors=True)
+```
+
+### Converting to Tensors
+
+```python
+# Convert to tensor representation
+tensor = circuit.to_tensor()
+
+# Convert to matrix representation
+matrix = circuit.to_matrix()
+```
+
+## Compilation
+
+### Compile to Measurement Sampler
+
+```python
+sampler = circuit.compile_sampler(seed=42)
+samples = sampler.sample(shots=1000)
+```
+
+### Compile to Detector Sampler
+
+```python
+det_sampler = circuit.compile_detector_sampler(seed=42)
+det_samples = det_sampler.sample(shots=1000)
+```
+
+See the [Samplers](/concepts/samplers) page for more details.
+
+### Generate Detector Error Model
+
+```python
+dem = circuit.detector_error_model(
+    decompose_errors=False,
+    flatten_loops=False,
+    allow_gauge_detectors=False,
+    approximate_disjoint_errors=False
+)
+```
+
+<Note>
+Unlike Stim, tsim allows non-deterministic observables by default. The detector error model generation accounts for this.
+</Note>
+
+### Compile Measurement-to-Detection-Events Converter
+
+```python
+converter = circuit.compile_m2d_converter(
+    skip_reference_sample=False
+)
+```
+
+## Comparison and Equality
+
+```python
+# Exact equality
+if circuit1 == circuit2:
+    print("Circuits are identical")
+
+# Approximate equality (for circuits with noise)
+if circuit1.approx_equals(circuit2, atol=0.01):
+    print("Circuits are approximately equal")
+```
+
+## String Representation
+
+```python
+# Get program text
+program_text = str(circuit)
+
+# Get repr (can recreate the circuit)
+repr_text = repr(circuit)  # Returns: tsim.Circuit('''...''')
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Instructions" icon="terminal" href="/concepts/instructions">
+    Learn about all supported gate instructions
+  </Card>
+  <Card title="Samplers" icon="dice" href="/concepts/samplers">
+    Compile circuits into efficient samplers
+  </Card>
+  <Card title="ZX-Calculus" icon="diagram-project" href="/concepts/zx-calculus">
+    Understand the underlying theory
+  </Card>
+</CardGroup>

@@ -1,0 +1,114 @@
+---
+title: Introduction
+description: GPU-accelerated quantum circuit sampler supporting non-Clifford gates via ZX-calculus stabilizer rank decomposition
+---
+
+<div style={{
+  background: 'linear-gradient(135deg, #b21e1e 0%, #e59f82 100%)',
+  padding: '3rem 2rem',
+  borderRadius: '6px',
+  marginBottom: '2rem',
+  color: 'white'
+}}>
+  <h1 style={{
+    fontSize: '2.5rem',
+    fontWeight: 700,
+    marginBottom: '1rem',
+    color: 'white'
+  }}>
+    Welcome to tsim
+  </h1>
+  <p style={{
+    fontSize: '1.25rem',
+    marginBottom: 0,
+    color: 'white',
+    opacity: 0.95
+  }}>
+    A GPU-accelerated quantum circuit sampler that feels just like Stim, but supports non-Clifford gates through ZX-calculus stabilizer rank decomposition.
+  </p>
+</div>
+
+## What is tsim?
+
+tsim is a quantum circuit simulator designed for fast sampling from Clifford+T circuits with Pauli noise. It mirrors the [Stim](https://github.com/quantumlib/Stim) API while extending support to non-Clifford gates including T, T_DAG, rotation gates (R_X, R_Y, R_Z), and the general single-qubit unitary U3.
+
+The underlying algorithm combines stabilizer rank decomposition with ZX-calculus simplification rules, enabling efficient simulation of hundreds of qubits as long as circuits don't contain too many non-Clifford instructions.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Stim-Compatible API" icon="clone">
+    Drop-in replacement for many Stim scripts with extended non-Clifford gate support
+  </Card>
+  <Card title="GPU Acceleration" icon="microchip">
+    Leverage GPU compute via JAX for fast sampling on CUDA-enabled hardware
+  </Card>
+  <Card title="ZX-Calculus Optimization" icon="diagram-project">
+    Automatic circuit simplification using ZX-calculus rewrite rules
+  </Card>
+  <Card title="Non-Clifford Gates" icon="wand-magic-sparkles">
+    Native support for T, T_DAG, R_X, R_Y, R_Z, and U3 gates
+  </Card>
+  <Card title="Noise Models" icon="wave-square">
+    Comprehensive Pauli noise channels and detector error models
+  </Card>
+  <Card title="Efficient Sampling" icon="gauge-high">
+    Compiled samplers manage contiguous data structures for optimal performance
+  </Card>
+</CardGroup>
+
+## Use Cases
+
+tsim is particularly well-suited for:
+
+- **Quantum Error Correction Research**: Simulate error correction circuits with realistic noise models
+- **Magic State Distillation**: Analyze and optimize T-state preparation protocols
+- **Clifford+T Circuit Analysis**: Evaluate quantum algorithms that mix Clifford and non-Clifford operations
+- **Detector Sampling**: Generate detector samples for quantum error correction experiments
+- **Non-Deterministic Measurements**: Handle circuits where detectors and observables have inherent randomness
+
+## How It Works
+
+tsim compiles quantum circuits into measurement or detector samplers following the approach described in [Sutcliffe and Kissinger (2025)](https://arxiv.org/abs/2403.06777). These compiled samplers:
+
+1. **Decompose** the circuit using stabilizer rank decomposition
+2. **Simplify** the resulting ZX-graph using rewrite rules
+3. **Compile** into efficient JAX code for CPU or GPU execution
+4. **Sample** using autoregressive sampling over the decomposition
+
+This architecture allows tsim to handle circuits with non-Clifford gates while maintaining high performance through GPU acceleration and careful memory management.
+
+## Important Differences from Stim
+
+<Warning>
+tsim supports **non-deterministic detectors and observables**. This means tsim simulates actual detector samples, whereas Stim reports detection flips (samples XORed with a noiseless reference).
+
+For example, a circuit with `X 0; M 0; DETECTOR rec[-1]` will produce `True` values in tsim but `False` values in Stim.
+</Warning>
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install tsim with pip, uv, or CUDA support
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build and sample from your first circuit in minutes
+  </Card>
+  <Card title="Migration Guide" icon="right-left" href="/guides/migration-from-stim">
+    Moving from Stim? Learn the key differences
+  </Card>
+  <Card title="Examples" icon="code" href="/examples/encoding-demo">
+    Explore detailed tutorials and use cases
+  </Card>
+</CardGroup>
+
+## Community and Support
+
+- **GitHub Repository**: [QuEraComputing/tsim](https://github.com/QuEraComputing/tsim)
+- **Issues and Bugs**: [GitHub Issues](https://github.com/QuEraComputing/tsim/issues)
+- **Research Paper**: [Sutcliffe and Kissinger (2025)](https://arxiv.org/abs/2403.06777)
+
+## License
+
+tsim is released under the Apache-2.0 license. See the [LICENSE](https://github.com/QuEraComputing/tsim/blob/main/LICENSE) file for details.

@@ -1,0 +1,586 @@
+---
+title: 'tsim.utils'
+description: 'Utility modules for visualization, encoding, and linear algebra'
+---
+
+The `tsim.utils` module provides utility functions for circuit visualization, transversal encoding, linear algebra operations, and program text conversion.
+
+## Overview
+
+This module contains:
+- **diagram**: SVG diagram rendering for quantum circuits
+- **encoder**: Transversal encoder utilities for QEC codes
+- **linalg**: Linear algebra utilities for GF(2) operations
+- **program_text**: Conversion between tsim shorthand and Stim syntax
+
+---
+
+## tsim.utils.diagram
+
+SVG diagram rendering for quantum circuits.
+
+### Main Functions
+
+#### render_svg
+
+```python
+def render_svg(
+    c: stim.Circuit,
+    type: str,
+    *,
+    tick: int | range | None = None,
+    filter_coords: Iterable[Iterable[float] | stim.DemTarget] = ((),),
+    rows: int | None = None,
+    width: float | None = None,
+    height: float | None = None,
+) -> Diagram
+```
+
+Render a Stim circuit timeline/timeslice diagram with custom labels.
+
+Automatically handles custom gate representations:
+- `S[T]` → T
+- `S_DAG[T]` → T†
+- `I[R_Z(theta=0.3*pi)]` → R_Z with annotation
+- `I[U3(...)]` → U₃
+
+**Parameters:**
+- `c`: Stim circuit to render
+- `type`: Diagram type ("timeline-svg" or "timeslice-svg")
+- `tick`: Specific tick or range of ticks to display
+- `filter_coords`: Coordinates to filter display
+- `rows`: Number of rows in timeslice diagram
+- `width`: Explicit width for container
+- `height`: Desired height
+
+**Returns:** `Diagram` object with SVG markup
+
+**Example:**
+```python
+import stim
+from tsim.utils.diagram import render_svg
+
+circuit = stim.Circuit("""
+    H 0
+    S[T] 0
+    CNOT 0 1
+    I[R_Z(theta=0.3*pi)] 1
+    M 0 1
+""")
+
+diagram = render_svg(circuit, "timeline-svg", height=200)
+# Display in Jupyter notebook automatically
+display(diagram)
+```
+
+**Source:** [diagram.py:274](/home/daytona/workspace/source/src/tsim/utils/diagram.py#L274)
+
+---
+
+#### Diagram
+
+```python
+class Diagram:
+    def __init__(self, svg: str)
+```
+
+Wrapper for SVG diagram with Jupyter notebook display support.
+
+**Methods:**
+- `__str__()`: Returns raw SVG string
+- `_repr_html_()`: Returns HTML representation for Jupyter display
+
+**Source:** [diagram.py:13](/home/daytona/workspace/source/src/tsim/utils/diagram.py#L13)
+
+---
+
+<Accordion title="Helper Functions">
+
+#### wrap_svg
+
+```python
+def wrap_svg(
+    svg: str,
+    *,
+    width: float | None = None,
+    height: float | None = None,
+) -> str
+```
+
+Wrap SVG string in a scrolling container.
+
+**Source:** [diagram.py:49](/home/daytona/workspace/source/src/tsim/utils/diagram.py#L49)
+
+---
+
+#### tagged_gates_to_placeholder
+
+```python
+def tagged_gates_to_placeholder(
+    circuit: stim.Circuit,
+) -> tuple[stim.Circuit, dict[float, GateLabel]]
+```
+
+Replace tagged gates with `I_ERROR` placeholder gates for rendering.
+
+Converts:
+- `S[T]` → placeholder with label "T"
+- `S_DAG[T]` → placeholder with label "T†"
+- `I[R_X(theta=0.3*pi)]` → placeholder with label "R_X" and annotation "0.3π"
+- `I[U3(...)]` → placeholder with label "U₃"
+
+**Source:** [diagram.py:197](/home/daytona/workspace/source/src/tsim/utils/diagram.py#L197)
+
+---
+
+#### placeholders_to_t
+
+```python
+def placeholders_to_t(
+    svg_string: str, 
+    placeholder_id_to_labels: dict[float, GateLabel]
+) -> str
+```
+
+Replace `I_ERROR` placeholder gates in SVG with actual gate names.
+
+**Source:** [diagram.py:96](/home/daytona/workspace/source/src/tsim/utils/diagram.py#L96)
+
+</Accordion>
+
+---
+
+## tsim.utils.encoder
+
+Transversal encoder utilities for QEC code experiments.
+
+### TransversalEncoder
+
+```python
+class TransversalEncoder:
+    n: int
+    encoding_qubit: int
+    circuit: tsim.Circuit
+    used_qubits: set[int]
+```
+
+Base class for transversal quantum error correction encoders.
+
+Enables fault-tolerant computation by encoding logical qubits into physical blocks and applying gates transversally.
+
+**Source:** [encoder.py:90](/home/daytona/workspace/source/src/tsim/utils/encoder.py#L90)
+
+---
+
+#### TransversalEncoder.initialize
+
+```python
+def initialize(
+    self,
+    program_text: str,
+    encoding_program_text: str | None = None
+) -> None
+```
+
+Initialize state preparation and apply encoding circuit.
+
+**Process:**
+1. Apply state preparation program for k logical qubits
+2. Apply encoding circuit to encode into n physical qubits per logical qubit
+
+**Parameters:**
+- `program_text`: State preparation program for k qubits (typically single-qubit states)
+- `encoding_program_text`: Encoding circuit for a single logical qubit (optional, uses default if not provided)
+
+**Example:**
+```python
+encoder = SteaneEncoder()
+encoder.initialize("""
+    R 0
+    H 0
+""")
+```
+
+**Source:** [encoder.py:115](/home/daytona/workspace/source/src/tsim/utils/encoder.py#L115)
+
+---
+
+#### TransversalEncoder.encode_transversally
+
+```python
+def encode_transversally(self, program_text: str) -> None
+```
+
+Encode a program transversally by replacing physical gates with transversal gates.
+
+Transforms a program on m logical qubits into a program on n × m physical qubits (n code blocks).
+
+**Parameters:**
+- `program_text`: The program to encode transversally
+
+**Example:**
+```python
+encoder = SteaneEncoder()
+encoder.initialize("R 0\nH 0")
+encoder.encode_transversally("""
+    CNOT 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+""")
+```
+
+**Source:** [encoder.py:159](/home/daytona/workspace/source/src/tsim/utils/encoder.py#L159)
+
+---
+
+#### TransversalEncoder.diagram
+
+```python
+def diagram(self, **kwargs)
+```
+
+Return a timeline-svg diagram of the encoded circuit.
+
+**Source:** [encoder.py:178](/home/daytona/workspace/source/src/tsim/utils/encoder.py#L178)
+
+---
+
+### SteaneEncoder
+
+```python
+class SteaneEncoder(TransversalEncoder):
+    def __init__(self)
+```
+
+Transversal encoder for the [[7,1,3]] Steane code.
+
+**Code Parameters:**
+- n = 7 physical qubits
+- k = 1 logical qubit
+- d = 3 distance
+- Encoding qubit: 6
+
+**Transversal Gates:**
+- `H`, `CNOT`, `CZ`: Native transversal
+- `SQRT_X` → `SQRT_X` + `X` correction
+- `S` → `S` + `Z` correction
+
+**Example:**
+```python
+from tsim.utils.encoder import SteaneEncoder
+
+encoder = SteaneEncoder()
+encoder.initialize("R 0\nH 0")
+encoder.encode_transversally("""
+    H 0
+    M 0
+""")
+print(encoder.circuit)
+```
+
+**Source:** [encoder.py:188](/home/daytona/workspace/source/src/tsim/utils/encoder.py#L188)
+
+---
+
+### ColorEncoder5
+
+```python
+class ColorEncoder5(TransversalEncoder):
+    def __init__(self)
+```
+
+Transversal encoder for the [[17,1,5]] 2D color code.
+
+**Code Parameters:**
+- n = 17 physical qubits
+- k = 1 logical qubit
+- d = 5 distance
+- Encoding qubit: 7
+
+**Source:** [encoder.py:229](/home/daytona/workspace/source/src/tsim/utils/encoder.py#L229)
+
+---
+
+### ColorEncoder3
+
+```python
+ColorEncoder3 = SteaneEncoder
+```
+
+Alias: The Steane code is a [[7,1,3]] color code.
+
+**Source:** [encoder.py:281](/home/daytona/workspace/source/src/tsim/utils/encoder.py#L281)
+
+---
+
+## tsim.utils.linalg
+
+Linear algebra utilities for GF(2) operations.
+
+### find_basis
+
+```python
+def find_basis(vectors: np.ndarray) -> tuple[np.ndarray, np.ndarray]
+```
+
+Decompose binary vectors into a basis subset and transformation matrix over GF(2).
+
+Given vectors V, finds a maximal linearly independent subset B (the basis) and computes transformation matrix T such that:
+
+```
+V = T @ B (mod 2)
+```
+
+**Algorithm:** Gaussian elimination in GF(2)
+1. For each vector v:
+   - Try to reduce v using existing basis vectors
+   - If v reduces to 0, it's dependent (record linear combination)
+   - If v reduces to non-zero, it's independent (add to basis)
+2. Build transformation matrix from linear combinations
+
+**Parameters:**
+- `vectors`: Input binary vectors of shape `(N, D)`, elements 0 or 1
+
+**Returns:** Tuple `(basis, transform)`
+- `basis`: Subset of independent vectors, shape `(K, D)` where K is rank
+- `transform`: Transformation matrix, shape `(N, K)`
+
+**Example:**
+```python
+import numpy as np
+from tsim.utils.linalg import find_basis
+
+# Three vectors, third is XOR of first two
+vectors = np.array([
+    [1, 0, 1, 0],
+    [0, 1, 1, 0],
+    [1, 1, 0, 0],  # XOR of first two
+], dtype=np.uint8)
+
+basis, transform = find_basis(vectors)
+# basis.shape = (2, 4) - only two independent vectors
+# transform.shape = (3, 2)
+# transform[2] = [1, 1] - third vector is sum of first two
+
+# Verify reconstruction
+reconstructed = (transform @ basis) % 2
+assert np.array_equal(reconstructed, vectors)
+```
+
+**Source:** [linalg.py:6](/home/daytona/workspace/source/src/tsim/utils/linalg.py#L6)
+
+---
+
+## tsim.utils.program_text
+
+Conversion utilities between tsim shorthand and Stim program text.
+
+### shorthand_to_stim
+
+```python
+def shorthand_to_stim(text: str) -> str
+```
+
+Convert tsim shorthand syntax to valid Stim instructions.
+
+**Conversions:**
+- `T 0 1` → `S[T] 0 1`
+- `T_DAG 0 1` → `S_DAG[T] 0 1`
+- `R_Z(0.3) 0` → `I[R_Z(theta=0.3*pi)] 0`
+- `R_X(0.25) 0` → `I[R_X(theta=0.25*pi)] 0`
+- `R_Y(-0.5) 0` → `I[R_Y(theta=-0.5*pi)] 0`
+- `U3(0.3, 0.24, 0.49) 0` → `I[U3(theta=0.3*pi, phi=0.24*pi, lambda=0.49*pi)] 0`
+
+**Example:**
+```python
+from tsim.utils.program_text import shorthand_to_stim
+
+shorthand = """
+H 0
+T 0
+R_Z(0.25) 1
+CNOT 0 1
+"""
+
+stim_text = shorthand_to_stim(shorthand)
+print(stim_text)
+# Output:
+# H 0
+# S[T] 0
+# I[R_Z(theta=0.25*pi)] 1
+# CNOT 0 1
+```
+
+**Source:** [program_text.py:6](/home/daytona/workspace/source/src/tsim/utils/program_text.py#L6)
+
+---
+
+### stim_to_shorthand
+
+```python
+def stim_to_shorthand(text: str) -> str
+```
+
+Convert expanded Stim annotations back to tsim shorthand.
+
+**Conversions:**
+- `I[U3(theta=θ*pi, phi=φ*pi, lambda=λ*pi)]` → `U3(θ, φ, λ)`
+- `I[R_X(theta=α*pi)]` → `R_X(α)`
+- `I[R_Y(theta=α*pi)]` → `R_Y(α)`
+- `I[R_Z(theta=α*pi)]` → `R_Z(α)`
+- `S[T]` → `T`
+- `S_DAG[T]` → `T_DAG`
+
+**Example:**
+```python
+from tsim.utils.program_text import stim_to_shorthand
+
+stim_text = """
+H 0
+S[T] 0
+I[R_Z(theta=0.25*pi)] 1
+CNOT 0 1
+"""
+
+shorthand = stim_to_shorthand(stim_text)
+print(shorthand)
+# Output:
+# H 0
+# T 0
+# R_Z(0.25) 1
+# CNOT 0 1
+```
+
+**Source:** [program_text.py:44](/home/daytona/workspace/source/src/tsim/utils/program_text.py#L44)
+
+---
+
+## Usage Examples
+
+### Example 1: Visualizing Non-Clifford Circuits
+
+```python
+import stim
+from tsim.utils.diagram import render_svg
+
+circuit = stim.Circuit("""
+    H 0
+    S[T] 0
+    S[T] 0
+    I[R_Z(theta=0.3*pi)] 1
+    CNOT 0 1
+    I[U3(theta=0.5*pi, phi=0.25*pi, lambda=0.75*pi)] 0
+    M 0 1
+""")
+
+diagram = render_svg(circuit, "timeline-svg", height=300)
+diagram  # Display in Jupyter
+```
+
+### Example 2: Steane Code Encoding
+
+```python
+from tsim.utils.encoder import SteaneEncoder
+
+# Create encoder
+encoder = SteaneEncoder()
+
+# Initialize logical |+> state
+encoder.initialize("""
+    R 0
+    H 0
+""")
+
+# Apply transversal gates
+encoder.encode_transversally("""
+    H 0
+    CNOT 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+""")
+
+# Visualize encoded circuit
+diagram = encoder.diagram(height=400)
+```
+
+### Example 3: Linear Algebra for Error Correction
+
+```python
+import numpy as np
+from tsim.utils.linalg import find_basis
+
+# Stabilizer generators for a simple code
+stabilizers = np.array([
+    [1, 1, 0, 0],  # X1 X2
+    [0, 0, 1, 1],  # Z3 Z4
+    [1, 1, 1, 1],  # X1 X2 Z3 Z4 (product of first two)
+], dtype=np.uint8)
+
+basis, transform = find_basis(stabilizers)
+print(f"Rank: {len(basis)}")
+print(f"Independent generators:\n{basis}")
+print(f"Transformation matrix:\n{transform}")
+```
+
+### Example 4: Program Text Conversion
+
+```python
+from tsim.utils.program_text import shorthand_to_stim, stim_to_shorthand
+import tsim
+
+# Write circuit in shorthand
+shorthand = """
+H 0
+T 0
+T 0
+R_Z(0.25) 1
+U3(0.5, 0.25, 0.75) 0
+CNOT 0 1
+M 0 1
+"""
+
+# Convert to Stim syntax
+stim_text = shorthand_to_stim(shorthand)
+
+# Create circuit
+circuit = tsim.Circuit(stim_text)
+
+# Sample
+samples = circuit.sample(shots=100)
+
+# Convert back to shorthand for display
+print(stim_to_shorthand(str(circuit._stim_circ)))
+```
+
+### Example 5: Custom Transversal Encoder
+
+```python
+from tsim.utils.encoder import TransversalEncoder
+
+class CustomEncoder(TransversalEncoder):
+    def __init__(self):
+        # Define custom [[n, k, d]] code
+        encoding_program = """
+        # Custom encoding circuit
+        R 0 1 2
+        H 0
+        CNOT 0 1
+        CNOT 0 2
+        """
+        
+        super().__init__(
+            n=3,  # 3 physical qubits
+            encoding_qubit=0,
+            encoding_program_text=encoding_program,
+            logical_gate_expansions={
+                # Define how logical gates map to physical gates
+                "H": ["H"],
+            },
+            stabilizer_generators=[[0, 1], [1, 2]],
+            observables=[[0]],
+        )
+
+encoder = CustomEncoder()
+encoder.initialize("R 0")
+encoder.encode_transversally("H 0\nM 0")
+```

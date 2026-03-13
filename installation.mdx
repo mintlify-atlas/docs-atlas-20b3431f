@@ -1,0 +1,127 @@
+---
+title: Installation
+description: Install tsim with pip, uv, or CUDA support for GPU acceleration
+---
+
+tsim is available on PyPI as `bloqade-tsim` and can be installed using pip or uv.
+
+## Requirements
+
+- Python 3.10 or higher
+- For GPU acceleration: CUDA 12 or CUDA 13 compatible hardware
+
+## Installation Methods
+
+<Steps>
+  <Step title="Choose your installation method">
+    Select the installation method that best fits your workflow:
+    
+    <CodeGroup>
+    ```bash pip
+    pip install bloqade-tsim
+    ```
+    
+    ```bash uv
+    uv add bloqade-tsim
+    ```
+    </CodeGroup>
+    
+    <Info>
+    [uv](https://docs.astral.sh/uv/) is a fast Python package installer and resolver. If you're not already using it, pip works great too!
+    </Info>
+  </Step>
+  
+  <Step title="(Optional) Install CUDA support for GPU acceleration">
+    If your machine has an NVIDIA GPU, you can enable GPU acceleration by installing the CUDA variant:
+    
+    <CodeGroup>
+    ```bash CUDA 13
+    pip install "bloqade-tsim[cuda13]"
+    ```
+    
+    ```bash CUDA 12
+    pip install "bloqade-tsim[cuda12]"
+    ```
+    
+    ```bash uv with CUDA 13
+    uv add "bloqade-tsim[cuda13]"
+    ```
+    
+    ```bash uv with CUDA 12
+    uv add "bloqade-tsim[cuda12]"
+    ```
+    </CodeGroup>
+    
+    <Note>
+    CUDA 13 requires JAX 0.6.0 or higher, while CUDA 12 works with JAX 0.4.38+. Choose the version that matches your CUDA installation.
+    </Note>
+  </Step>
+  
+  <Step title="Verify installation">
+    Test that tsim is installed correctly:
+    
+    ```python
+    import tsim
+    
+    # Create a simple circuit
+    c = tsim.Circuit("""
+        H 0
+        CNOT 0 1
+        M 0 1
+    """)
+    
+    # Compile and sample
+    sampler = c.compile_sampler()
+    samples = sampler.sample(shots=10)
+    print(samples)
+    ```
+    
+    You should see output showing the sampled measurements.
+  </Step>
+</Steps>
+
+## What Gets Installed
+
+tsim has the following core dependencies:
+
+- **JAX**: For efficient array operations and GPU acceleration
+- **Stim**: For the base circuit API and Clifford gate simulation
+- **pyzx-param**: For ZX-calculus graph manipulation
+- **NumPy**: For numerical operations
+- **Equinox**: For JAX utilities
+
+<Tip>
+For detailed API documentation and advanced usage, check out the [API Reference](/api/circuit) once you've completed the [Quick Start](/quickstart).
+</Tip>
+
+## Troubleshooting
+
+### ImportError: No module named 'tsim'
+
+Make sure you installed `bloqade-tsim` (with the `bloqade-` prefix), not `tsim`:
+
+```bash
+pip install bloqade-tsim
+```
+
+### CUDA not detected
+
+If you installed the CUDA variant but JAX isn't using your GPU:
+
+1. Verify CUDA is installed: `nvidia-smi`
+2. Check JAX can see your GPU:
+   ```python
+   import jax
+   print(jax.devices())  # Should show GPU devices
+   ```
+3. If no GPU is detected, you may need to reinstall with the correct CUDA version
+
+### Python version incompatibility
+
+tsim requires Python 3.10 or higher. Check your version:
+
+```bash
+python --version
+```
+
+If you need to upgrade, consider using [pyenv](https://github.com/pyenv/pyenv) or [uv](https://docs.astral.sh/uv/) to manage multiple Python versions.

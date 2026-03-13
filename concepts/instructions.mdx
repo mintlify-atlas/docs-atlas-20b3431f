@@ -1,0 +1,640 @@
+---
+title: 'Instructions'
+description: 'Complete reference for all supported quantum gates and operations'
+---
+
+## Overview
+
+Tsim supports all [Stim instructions](https://github.com/quantumlib/Stim/wiki/Stim-v1.9-Gate-Reference) plus additional non-Clifford gates. This page documents the complete instruction set.
+
+## Non-Clifford Gates
+
+These gates require stabilizer rank decomposition and increase compilation complexity.
+
+### T and T_DAG
+
+The T gate applies a π/4 phase rotation. T_DAG is its inverse (−π/4 rotation).
+
+**Matrix Definitions:**
+
+$$
+T = \begin{pmatrix}
+1 & 0 \\
+0 & e^{i\pi/4}
+\end{pmatrix}
+, \quad
+T^\dagger = \begin{pmatrix}
+1 & 0 \\
+0 & e^{-i\pi/4}
+\end{pmatrix}
+$$
+
+**Usage:**
+
+```python
+import tsim
+
+c = tsim.Circuit('''
+    T 0 1 2      # Apply T to qubits 0, 1, 2
+    T_DAG 0      # Apply T_DAG to qubit 0
+''')
+
+# Or using append()
+c.append('T', 0)
+c.append('T_DAG', [1, 2])
+```
+
+<Note>
+Internal representation: T and T_DAG are stored as tags on identity gates and converted to Z-phase vertices in the ZX graph.
+</Note>
+
+### Rotation Gates: R_X, R_Y, R_Z
+
+Parametric rotations around the X, Y, and Z axes. The parameter α specifies the rotation angle as α·π radians.
+
+**Matrix Definitions:**
+
+$$
+\begin{align*}
+R_X(\alpha) &= \begin{pmatrix}
+\cos(\alpha\pi/2) & -i \sin(\alpha\pi/2) \\
+-i \sin(\alpha\pi/2) & \cos(\alpha\pi/2)
+\end{pmatrix}
+\\
+R_Y(\alpha) &= \begin{pmatrix}
+\cos(\alpha\pi/2) & -\sin(\alpha\pi/2) \\
+\sin(\alpha\pi/2) & \cos(\alpha\pi/2)
+\end{pmatrix}
+\\
+R_Z(\alpha) &= \begin{pmatrix}
+e^{-i\alpha\pi/2} & 0 \\
+0 & e^{i\alpha\pi/2}
+\end{pmatrix}
+\end{align*}
+$$
+
+**Usage:**
+
+```python
+c = tsim.Circuit('''
+    R_X(0.5) 0    # Rotate qubit 0 around X by π/2
+    R_Y(0.25) 1   # Rotate qubit 1 around Y by π/4  
+    R_Z(1.0) 2    # Rotate qubit 2 around Z by π
+''')
+
+# Or using append() with parameter
+c.append('R_X', 0, 0.5)
+c.append('R_Y', 1, 0.25)
+c.append('R_Z', 2, 1.0)
+```
+
+<Tip>
+Rotation gates are stored as tags like `R_X(theta=0.5*pi)` and converted to parametric phase vertices in the ZX representation.
+</Tip>
+
+### U3 Gate
+
+The general single-qubit unitary with three parameters (θ, φ, λ), each specified as multiples of π.
+
+**Matrix Definition:**
+
+$$
+U_3(\theta, \phi, \lambda) = \begin{pmatrix}
+\cos(\theta\pi/2) & -e^{i\lambda\pi}\sin(\theta\pi/2) \\
+e^{i\phi\pi}\sin(\theta\pi/2) & e^{i(\phi+\lambda)\pi}\cos(\theta\pi/2)
+\end{pmatrix}
+$$
+
+**Decomposition:**
+
+U3 is implemented as: U3(θ, φ, λ) = R_Z(φ) · R_Y(θ) · R_Z(λ)
+
+**Usage:**
+
+```python
+c = tsim.Circuit('''
+    U3(0.5, 0.25, 0.125) 0  # θ=π/2, φ=π/4, λ=π/8
+''')
+
+# Or using append() with three parameters
+c.append('U3', 0, [0.5, 0.25, 0.125])
+```
+
+<Warning>
+The inverse of U3(θ, φ, λ) is U3(−θ, −λ, −φ), not U3(−θ, −φ, −λ). Tsim handles this correctly in `circuit.inverse()`.
+</Warning>
+
+## Pauli Gates
+
+Single-qubit Pauli operators.
+
+### I (Identity)
+
+```python
+c = tsim.Circuit('I 0 1 2')  # No-op on qubits 0, 1, 2
+```
+
+In ZX-calculus: advances the qubit row without adding vertices.
+
+### X (Pauli-X)
+
+$$X = \begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('X 0 1')  # Bit flip on qubits 0, 1
+```
+
+Implemented as: X-phase vertex with phase π.
+
+### Y (Pauli-Y)
+
+$$Y = \begin{pmatrix} 0 & -i \\ i & 0 \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('Y 0')
+```
+
+Implemented as: Z(qubit) · X(qubit) with global phase π/2.
+
+### Z (Pauli-Z)
+
+$$Z = \begin{pmatrix} 1 & 0 \\ 0 & -1 \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('Z 0 1 2')
+```
+
+Implemented as: Z-phase vertex with phase π.
+
+## Single-Qubit Clifford Gates
+
+### H (Hadamard)
+
+Swaps X and Z axes.
+
+$$H = \frac{1}{\sqrt{2}} \begin{pmatrix} 1 & 1 \\ 1 & -1 \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('H 0 1')
+```
+
+In ZX-calculus: toggles edge type between SIMPLE and HADAMARD.
+
+### S, SQRT_Z (Square Root of Z)
+
+$$S = \begin{pmatrix} 1 & 0 \\ 0 & i \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('S 0')
+c = tsim.Circuit('SQRT_Z 0')  # Alias
+```
+
+Implemented as: Z-phase vertex with phase π/2.
+
+### S_DAG, SQRT_Z_DAG
+
+$$S^\dagger = \begin{pmatrix} 1 & 0 \\ 0 & -i \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('S_DAG 0')
+c = tsim.Circuit('SQRT_Z_DAG 0')  # Alias
+```
+
+Implemented as: Z-phase vertex with phase −π/2.
+
+### SQRT_X, SQRT_X_DAG
+
+$$\sqrt{X} = \frac{1}{2}\begin{pmatrix} 1+i & 1-i \\ 1-i & 1+i \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('SQRT_X 0')
+c = tsim.Circuit('SQRT_X_DAG 1')  # Inverse
+```
+
+Implemented as: X-phase vertices with phase ±π/2.
+
+### SQRT_Y, SQRT_Y_DAG
+
+$$\sqrt{Y} = \frac{1}{2}\begin{pmatrix} 1+i & -1-i \\ 1+i & 1+i \end{pmatrix}$$
+
+```python
+c = tsim.Circuit('SQRT_Y 0')
+c = tsim.Circuit('SQRT_Y_DAG 1')  # Inverse
+```
+
+### H_XY, H_YZ, H_XZ
+
+Variants of Hadamard that swap different axes:
+
+- **H_XY**: Swaps X and Y axes (instead of X and Z)
+- **H_YZ**: Swaps Y and Z axes
+- **H_XZ**: Alias for standard H
+
+```python
+c = tsim.Circuit('''
+    H_XY 0
+    H_YZ 1
+    H_XZ 2
+''')
+```
+
+### C_XYZ, C_ZYX
+
+Axis cycling gates:
+
+- **C_XYZ**: Right-handed cycling: X → Y → Z → X
+- **C_ZYX**: Left-handed cycling: Z → Y → X → Z
+
+```python
+c = tsim.Circuit('''
+    C_XYZ 0
+    C_ZYX 1
+''')
+```
+
+## Two-Qubit Clifford Gates
+
+### CNOT, CX, ZCX (Controlled-X)
+
+```python
+c = tsim.Circuit('CNOT 0 1')  # Control: 0, Target: 1
+c = tsim.Circuit('CX 0 1')     # Alias
+c = tsim.Circuit('ZCX 0 1')    # Alias (Z-basis control)
+```
+
+In ZX-calculus: Z-vertex on control, X-vertex on target, SIMPLE edge between them.
+
+### CZ, ZCZ (Controlled-Z)
+
+```python
+c = tsim.Circuit('CZ 0 1')     # Symmetric
+c = tsim.Circuit('ZCZ 0 1')    # Alias
+```
+
+Implemented as: Z-vertices on both qubits with HADAMARD edge.
+
+### CY, ZCY (Controlled-Y)
+
+```python
+c = tsim.Circuit('CY 0 1')
+c = tsim.Circuit('ZCY 0 1')    # Alias
+```
+
+Implemented as: S_DAG · CNOT · S on target.
+
+### XCX, XCY, XCZ (X-Basis Controlled)
+
+Controlled gates where the control is in the X basis (|+⟩/|−⟩):
+
+```python
+c = tsim.Circuit('''
+    XCX 0 1  # Apply X to target if control is in |−⟩
+    XCY 0 1  # Apply Y to target if control is in |−⟩ 
+    XCZ 0 1  # Apply Z to target if control is in |−⟩
+''')
+```
+
+### YCX, YCY, YCZ (Y-Basis Controlled)
+
+Controlled gates where the control is in the Y basis (|i⟩/|−i⟩):
+
+```python
+c = tsim.Circuit('''
+    YCX 0 1  # Apply X to target if control is in |−i⟩
+    YCY 0 1  # Apply Y to target if control is in |−i⟩
+    YCZ 0 1  # Apply Z to target if control is in |−i⟩
+''')
+```
+
+### SWAP
+
+Swaps two qubits:
+
+```python
+c = tsim.Circuit('SWAP 0 1')
+```
+
+In ZX-calculus: swaps the vertex mappings for the two qubits.
+
+### ISWAP, ISWAP_DAG
+
+Swap with phase:
+
+```python
+c = tsim.Circuit('ISWAP 0 1')      # Phases −1 eigenspace of ZZ by i
+c = tsim.Circuit('ISWAP_DAG 0 1')  # Phases by −i
+```
+
+### SQRT_XX, SQRT_YY, SQRT_ZZ (and _DAG variants)
+
+Phase the −1 eigenspace of two-qubit Pauli observables:
+
+```python
+c = tsim.Circuit('''
+    SQRT_XX 0 1      # Phases −1 eigenspace of XX by i
+    SQRT_YY 0 1      # Phases −1 eigenspace of YY by i
+    SQRT_ZZ 0 1      # Phases −1 eigenspace of ZZ by i
+    SQRT_XX_DAG 0 1  # Inverse operations
+''')
+```
+
+## Measurement Operations
+
+### M, MZ (Z-Basis Measurement)
+
+```python
+c = tsim.Circuit('''
+    M 0 1 2       # Measure qubits in Z basis
+    MZ 0          # Alias
+''')
+
+# With noise
+c.append('M', 0, 0.01)  # 1% measurement error
+```
+
+In ZX-calculus: Creates Z-vertex with phase label `rec[i]`.
+
+### MX (X-Basis Measurement)
+
+```python
+c = tsim.Circuit('MX 0 1')
+
+# With noise
+c.append('MX', 0, 0.01)
+```
+
+Implemented as: H · M · H.
+
+### MY (Y-Basis Measurement)
+
+```python
+c = tsim.Circuit('MY 0')
+
+# With noise  
+c.append('MY', 0, 0.01)
+```
+
+Implemented as: H_YZ · M · H_YZ.
+
+### MPP (Pauli Product Measurement)
+
+Measure a product of Pauli operators:
+
+```python
+c = tsim.Circuit('''
+    MPP X0*Y1*Z2  # Measure X₀ ⊗ Y₁ ⊗ Z₂
+    MPP Z0*Z1     # Measure two-qubit stabilizer
+''')
+```
+
+<Note>
+MPP uses an auxiliary qubit (index −2) to perform the measurement via entangling gates.
+</Note>
+
+### MR, MRX, MRY, MRZ (Demolition Measurements)
+
+Measure and reset in one operation:
+
+```python
+c = tsim.Circuit('''
+    MR 0       # Measure in Z basis, reset to |0⟩
+    MRX 1      # Measure in X basis, reset to |+⟩
+    MRY 2      # Measure in Y basis, reset to |i⟩
+    MRZ 3      # Alias for MR
+''')
+
+# With noise
+c.append('MR', 0, 0.01)
+```
+
+## Reset Operations
+
+### R, RZ (Z-Basis Reset)
+
+Reset qubit to |0⟩:
+
+```python
+c = tsim.Circuit('R 0 1 2')
+c = tsim.Circuit('RZ 0')  # Alias
+```
+
+Implemented by: Silent measurement + conditional X correction.
+
+### RX (X-Basis Reset)
+
+Reset qubit to |+⟩:
+
+```python
+c = tsim.Circuit('RX 0')
+```
+
+Implemented as: H · R · H.
+
+### RY (Y-Basis Reset)
+
+Reset qubit to |i⟩:
+
+```python
+c = tsim.Circuit('RY 0')
+```
+
+Implemented as: H_YZ · R · H_YZ.
+
+## Noise Channels
+
+### X_ERROR, Y_ERROR, Z_ERROR
+
+Single-qubit Pauli errors:
+
+```python
+c = tsim.Circuit('''
+    X_ERROR(0.01) 0    # 1% X error
+    Y_ERROR(0.02) 1    # 2% Y error  
+    Z_ERROR(0.03) 2    # 3% Z error
+''')
+
+# Using append
+c.append('X_ERROR', 0, 0.01)
+```
+
+### PAULI_CHANNEL_1
+
+General single-qubit Pauli channel:
+
+```python
+# PAULI_CHANNEL_1(px, py, pz)
+c = tsim.Circuit('PAULI_CHANNEL_1(0.1, 0.1, 0.2) 0')
+
+c.append('PAULI_CHANNEL_1', 0, [0.1, 0.1, 0.2])
+```
+
+Applies X with probability px, Y with py, Z with pz (must sum to ≤1).
+
+### DEPOLARIZE1
+
+Single-qubit depolarizing channel:
+
+```python
+c = tsim.Circuit('DEPOLARIZE1(0.01) 0')
+
+c.append('DEPOLARIZE1', 0, 0.01)
+```
+
+Equivalent to: PAULI_CHANNEL_1(p/3, p/3, p/3).
+
+### PAULI_CHANNEL_2
+
+Two-qubit Pauli channel with 15 parameters (one per Pauli pair):
+
+```python
+# PAULI_CHANNEL_2(pIX, pIY, pIZ, pXI, pXX, pXY, pXZ, pYI, pYX, pYY, pYZ, pZI, pZX, pZY, pZZ)
+c = tsim.Circuit('''
+    PAULI_CHANNEL_2(0.01, 0.01, 0, 0.01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) 0 1
+''')
+```
+
+### DEPOLARIZE2
+
+Two-qubit depolarizing channel:
+
+```python
+c = tsim.Circuit('DEPOLARIZE2(0.01) 0 1')
+
+c.append('DEPOLARIZE2', [0, 1], 0.01)
+```
+
+Equivalent to: PAULI_CHANNEL_2 with p/15 for each of the 15 error terms.
+
+### CORRELATED_ERROR
+
+Correlated multi-qubit Pauli errors:
+
+```python
+c = tsim.Circuit('''
+    CORRELATED_ERROR(0.1) X0 Y1 Z2  # 10% chance of X₀Y₁Z₂
+    CORRELATED_ERROR(0.05) Z0 Z1    # 5% chance of Z₀Z₁
+''')
+```
+
+<Warning>
+Multiple CORRELATED_ERROR instructions in sequence are treated as independent unless they are part of an ELSE_CORRELATED_ERROR block.
+</Warning>
+
+## Annotations
+
+### DETECTOR
+
+Define a stabilizer detector:
+
+```python
+c = tsim.Circuit('''
+    M 0 1
+    DETECTOR rec[-1] rec[-2]  # XOR of last two measurements
+''')
+
+# With coordinates
+c = tsim.Circuit('DETECTOR(0, 1, 0) rec[-1]')
+```
+
+In ZX-calculus: Creates X-vertex connected to measurement vertices.
+
+### OBSERVABLE_INCLUDE
+
+Define logical observable:
+
+```python
+c = tsim.Circuit('''
+    M 0 1 2
+    OBSERVABLE_INCLUDE(0) rec[-1]  # Observable 0
+    OBSERVABLE_INCLUDE(0) rec[-2]  # Add to observable 0
+    OBSERVABLE_INCLUDE(1) rec[-3]  # Observable 1
+''')
+```
+
+### TICK
+
+Synchronization boundary (aligns all qubits to same time layer):
+
+```python
+c = tsim.Circuit('''
+    H 0
+    CNOT 0 1
+    TICK
+    M 0 1
+''')
+```
+
+Useful for circuit diagrams and timeslice visualization.
+
+### QUBIT_COORDS, SHIFT_COORDS
+
+Define qubit coordinates for visualization:
+
+```python
+c = tsim.Circuit('''
+    QUBIT_COORDS(0, 0) 0
+    QUBIT_COORDS(1, 0) 1
+    QUBIT_COORDS(0, 1) 2
+''')
+```
+
+## Special Features
+
+### Repeat Blocks
+
+Repeat a sequence of operations:
+
+```python
+c = tsim.Circuit('''
+    REPEAT 100 {
+        H 0
+        CNOT 0 1
+        M 0 1
+        TICK
+    }
+''')
+```
+
+### Inverted Measurements
+
+Flip measurement outcome:
+
+```python
+c = tsim.Circuit('''
+    M !0      # Measure qubit 0, invert result
+    MX !1 !2  # Measure qubits 1, 2 in X basis, invert
+''')
+```
+
+### Measurement Record Targets
+
+Use previous measurements as controls:
+
+```python
+c = tsim.Circuit('''
+    M 0
+    CX rec[-1] 1  # Use last measurement as classical control
+''')
+```
+
+<Note>
+Classically-controlled gates have limited support. The control must reference a measurement record, and only certain gate types are supported.
+</Note>
+
+## Gate Table Reference
+
+The complete gate dispatch table is available in the source code at `tsim/core/instructions.py`. It maps gate names to their implementation functions and qubit counts.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Circuits" icon="microchip" href="/concepts/circuits">
+    Learn how to build circuits with these instructions
+  </Card>
+  <Card title="Samplers" icon="dice" href="/concepts/samplers">
+    Compile circuits into efficient samplers
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/circuit">
+    Detailed API documentation
+  </Card>
+</CardGroup>

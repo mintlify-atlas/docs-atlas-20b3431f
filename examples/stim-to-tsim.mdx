@@ -1,0 +1,129 @@
+---
+title: From STIM to TSIM
+description: Transition from STIM to TSIM with this comprehensive guide covering non-Clifford instructions, detector sampling, batch sizes, and key differences
+---
+
+If you have been using STIM, using TSIM should feel very similar. In many cases, replacing `stim` with `tsim` should just work.
+
+<Info>
+If you're not yet familiar with STIM, there are lots of resources out there:
+- [STIM's getting_started notebook](https://github.com/quantumlib/Stim/blob/main/doc/getting_started.ipynb)
+- [Craig Gidney's STIM tutorial on YouTube](https://www.youtube.com/watch?v=sprDaLxPVNI)
+- [Google's course on QEC](https://www.coursera.org/learn/quantum-error-correction#modules)
+- [STIM 101 tutorial](https://www.youtube.com/watch?v=LiT6NDQcOm0)
+</Info>
+
+## Non-Clifford Instructions
+
+TSIM extends the STIM text format with the non-Clifford instructions `T`, `T_DAG`, `R_X`, `R_Y`, `R_Z`, and `U3`. Rotation angles are specified in units of π.
+
+```python
+import tsim
+import stim
+
+c = tsim.Circuit(
+    """
+    T 0
+    T_DAG 0
+    R_X(0.1) 0
+    R_Y(0.2) 0
+    R_Z(0.3) 0
+    U3(0.1, 0.2, 0.3) 0
+"""
+)
+c.diagram(height=150)
+```
+
+## Detector Reference Samples
+
+There are a few differences between the two packages. For example, STIM's detector sampler will output results relative to a noiseless reference sample. For example, in the following circuit, detector and observable bits will always be `False`:
+
+```python
+circuit_str = """
+    X 0
+    M 0
+    DETECTOR rec[-1]
+    OBSERVABLE_INCLUDE(0) rec[-1]
+    """
+c = stim.Circuit(circuit_str)
+stim_sampler = c.compile_detector_sampler(seed=None)
+samples = stim_sampler.sample(shots=5, append_observables=True)
+print(samples)
+```
+
+In TSIM, actual detector and observable bits will always be reported:
+
+```python
+c = tsim.Circuit(circuit_str)
+tsim_sampler = c.compile_detector_sampler(seed=0)
+samples = tsim_sampler.sample(shots=5, append_observables=True)
+print(samples)
+```
+
+## Batch Size and Just-in-Time Compilation
+
+<Note>
+TSIM's samplers have a `batch_size` argument, which does not exist in STIM. This parameter controls the number of shots sampled in parallel.
+</Note>
+
+To achieve maximum performance, it may be required to increase the `batch_size`. Especially when running on a GPU, it is recommended to increase the `batch_size` until VRAM is exhausted.
+
+```python
+tsim_sampler.sample(shots=1_000_000, batch_size=100_000)
+```
+
+TSIM uses `jax` just-in-time compilation, which is triggered upon first execution of the `sample` function. This means that subsequent calls to `sample` with the same parameters will be faster. Note that recompilation is triggered whenever the `batch_size` is changed.
+
+When `batch_size` is not specified, it is set to `shots` by default.
+
+## Visualization Methods
+
+TSIM supports a subset of STIM's visualization methods. Since TSIM is based on ZX diagrams, it also provides visualization via `pyzx`.
+
+### Timeline Diagram
+
+```python
+c = tsim.Circuit(
+    """
+    RX 0 1
+    TICK
+    T 0
+    TICK
+    CNOT 0 1
+    TICK
+    U3(0.1, 0.2, 0.3) 1
+    TICK
+    M 0 1
+"""
+)
+c.diagram("timeline-svg", height=150)
+```
+
+### Timeslice Diagram
+
+```python
+c.diagram("timeslice-svg", height=80, rows=1)
+```
+
+### ZX Diagram
+
+```python
+c.diagram("pyzx");
+```
+
+## REPEAT Instructions Are Flattened
+
+<Note>
+TSIM does not support `REPEAT` instructions. Any `REPEAT` instructions will be flattened.
+</Note>
+
+```python
+c = tsim.Circuit(
+    """
+    REPEAT 10 {
+        T 0
+    }
+"""
+)
+print(c)
+```

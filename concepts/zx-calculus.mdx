@@ -1,0 +1,473 @@
+---
+title: 'ZX-Calculus'
+description: 'Understanding stabilizer rank decomposition with ZX-calculus'
+---
+
+## Overview
+
+Tsim uses **ZX-calculus** combined with **stabilizer rank decomposition** to efficiently simulate quantum circuits containing non-Clifford gates. This page explains the theoretical foundation and how tsim leverages it for fast sampling.
+
+## What is ZX-Calculus?
+
+ZX-calculus is a graphical language for reasoning about quantum computations. Instead of representing circuits as sequences of gate matrices, ZX-calculus represents them as **graphs** with:
+
+- **Vertices** (nodes): Represent quantum operations
+  - **Z-spiders** (green): Z-basis operations and phase gates
+  - **X-spiders** (red): X-basis operations
+  - **Boundary vertices**: Inputs and outputs
+
+- **Edges**: Represent quantum wires
+  - **Simple edges**: Standard connections
+  - **Hadamard edges**: Connections with basis change
+
+- **Phases**: Parameters on vertices (multiples of π)
+
+### Example: Bell State Preparation
+
+The circuit:
+```
+H 0
+CNOT 0 1
+```
+
+Becomes a ZX diagram with:
+- Hadamard edge on qubit 0
+- Z-spider (control) connected to X-spider (target)
+
+## Why ZX-Calculus?
+
+### Advantages for Simulation
+
+1. **Graphical Simplification**: ZX-calculus has rewrite rules that simplify circuits automatically
+2. **Basis-Agnostic**: Can work in X, Z, or mixed bases naturally
+3. **Clifford Optimization**: Clifford gates simplify dramatically in ZX representation
+4. **Non-Clifford Handling**: T gates and rotations are naturally represented as parametric phases
+
+### Rewrite Rules
+
+ZX-calculus includes rules like:
+- **Spider fusion**: Adjacent same-color spiders can merge
+- **Color change**: H-H-H = I, allowing basis swaps
+- **Phase cancellation**: Opposite phases annihilate
+- **Clifford simplification**: Many Clifford patterns reduce to identity
+
+Tsim uses these rules (via `pyzx_param`) to simplify circuits before sampling.
+
+## Stabilizer Rank Decomposition
+
+### The Challenge
+
+Clifford circuits (H, S, CNOT, etc.) can be simulated efficiently using the **stabilizer formalism**. However, non-Clifford gates like T break this efficiency.
+
+### The Solution
+
+Any quantum state can be decomposed as a sum of stabilizer states:
+
+$$
+|\psi\rangle = \sum_{i=1}^{\chi} c_i |\phi_i\rangle
+$$
+
+where each |φᵢ⟩ is a stabilizer state and **χ** is the **stabilizer rank**.
+
+### Key Insight
+
+For a circuit with **k** T gates:
+- **Stabilizer rank**: χ ≤ 2^k (often much smaller after simplification)
+- Each stabilizer component can be sampled efficiently
+- Final samples are drawn from the mixture
+
+<Note>
+Tsim's approach is based on [Sutcliffe and Kissinger (2025)](https://arxiv.org/abs/2403.06777), which shows how to use ZX-calculus for stabilizer rank decomposition.
+</Note>
+
+## How Tsim Works
+
+### Step 1: Circuit to ZX Graph
+
+Tsim converts the input circuit to a ZX graph representation:
+
+```python
+import tsim
+
+circuit = tsim.Circuit('''
+    H 0
+    T 0
+    CNOT 0 1
+    M 0 1
+''')
+
+# Get the ZX graph
+graph = circuit.get_graph()
+```
+
+Non-Clifford gates become parametric phase vertices:
+- **T gate**: Z-spider with phase π/4
+- **R_Z(α)**: Z-spider with phase α·π
+- **R_X(α)**: X-spider with phase α·π
+- **U3(θ, φ, λ)**: Decomposed into R_Z and R_Y rotations
+
+### Step 2: ZX Simplification
+
+The graph is simplified using ZX rewrite rules:
+
+```python
+import pyzx_param as zx
+
+# Full reduction (preserves non-Clifford phases)
+zx.full_reduce(graph, paramSafe=True)
+```
+
+This:
+- Cancels redundant gates
+- Fuses adjacent operations
+- Reduces the effective stabilizer rank
+- Preserves parametric phases for T gates and rotations
+
+### Step 3: Build Sampling Graph
+
+For sampling, tsim builds a special "doubled" graph:
+
+1. **Double the circuit**: Compose with its adjoint (⟨ψ|ψ⟩)
+2. **Connect measurements**: Link measurement vertices to their adjoints
+3. **Add outputs**: Create vertices for measurements, detectors, or observables
+
+```python
+# Get sampling graph for measurements
+meas_graph = circuit.get_sampling_graph(sample_detectors=False)
+
+# Get sampling graph for detectors/observables
+det_graph = circuit.get_sampling_graph(sample_detectors=True)
+```
+
+This graph represents the probability amplitudes needed for sampling.
+
+### Step 4: Stabilizer Rank Decomposition
+
+Tsim decomposes the sampling graph into stabilizer states:
+
+1. **Identify non-Clifford phases**: Extract all parametric vertices (T gates, rotations)
+2. **Sum-over-paths**: Each assignment of phases yields a stabilizer graph
+3. **Component compilation**: Each stabilizer component is compiled to a scalar graph
+
+<Tip>
+For k non-Clifford gates, this creates up to 2^k components, but ZX simplification often reduces this significantly.
+</Tip>
+
+### Step 5: Compilation to Scalar Graphs
+
+Each stabilizer component becomes a **compiled scalar graph**:
+
+- **A terms**: Constant phase contributions
+- **B terms**: Parameter-dependent terms (from error channels)
+- **C terms**: Measurement-dependent terms  
+- **D terms**: Non-linear interactions
+
+These terms enable fast evaluation on GPU using JAX.
+
+```python
+sampler = circuit.compile_detector_sampler()
+print(sampler)  # Shows compiled statistics
+```
+
+Example output:
+```
+CompiledDetectorSampler(142 graphs, 8 error channel bits, 5 outputs for largest cc,
+≤ 12 parameters, 1024 A terms, 512 B terms, 256 C terms, 128 D terms, 4.2 MB)
+```
+
+### Step 6: Autoregressive Sampling
+
+Sampling proceeds via autoregressive decomposition:
+
+1. **Normalization**: Compute P(errors) from the graph
+2. **Sequential sampling**: Sample each output bit conditioned on previous bits
+   - P(bit₀ | errors)
+   - P(bit₁ | bit₀, errors)
+   - P(bit₂ | bit₀, bit₁, errors)
+   - ...
+3. **Chain rule**: Update probabilities using conditional probabilities
+
+```python
+samples = sampler.sample(shots=1000)
+```
+
+This is implemented in JAX for GPU acceleration.
+
+## Error Handling
+
+### Pauli Noise Channels
+
+Noise is incorporated into the ZX graph as **parametric error vertices**:
+
+```python
+circuit = tsim.Circuit('''
+    H 0
+    X_ERROR(0.01) 0     # 1% bit flip error
+    DEPOLARIZE1(0.02) 0 # 2% depolarizing error
+    M 0
+''')
+```
+
+Each error channel adds error parameters to the sampling graph:
+- **Independent errors**: Each has its own parameter bit
+- **Correlated errors**: Share parameter bits
+
+During sampling:
+1. Sample error configurations from noise distributions
+2. Condition quantum sampling on each error config
+3. Average over error samples
+
+### Error Transform
+
+Tsim applies an **error basis transformation** to simplify the graph:
+
+```python
+from tsim.core.graph import transform_error_basis
+
+graph, transform_matrix = transform_error_basis(graph)
+```
+
+This:
+- Reduces the effective number of error parameters
+- Exploits correlations in error patterns
+- Improves sampling efficiency
+
+## Complexity
+
+### Stabilizer Rank
+
+The key complexity factor is the stabilizer rank χ:
+
+- **Clifford circuits**: χ = 1 (single stabilizer state)
+- **k T gates** (worst case): χ = 2^k
+- **After ZX simplification**: Often χ ≪ 2^k
+
+### Time Complexity
+
+For a circuit with:
+- n qubits
+- k non-Clifford gates
+- m measurements
+- χ stabilizer rank
+- s shots
+
+Sampling complexity: **O(s · m · χ · poly(n))**
+
+<Warning>
+Circuits with many T gates can become intractable (χ grows exponentially). However, ZX simplification often reduces the effective stabilizer rank significantly.
+</Warning>
+
+### Space Complexity
+
+Compiled samplers store:
+- **Scalar graphs**: O(χ · poly(n))
+- **Term arrays**: A, B, C, D terms scale with graph complexity
+- **GPU memory**: Batching trades memory for throughput
+
+## Optimization Techniques
+
+### Graph Simplification
+
+Tsim applies several ZX simplification passes:
+
+1. **Full reduction**: `pyzx.full_reduce(graph, paramSafe=True)`
+2. **Gadget fusion**: Merges phase gadgets
+3. **Interior reduction**: Simplifies internal structure
+4. **Squashing**: Removes redundant vertices
+
+### Connected Components
+
+The sampling graph is split into **connected components**:
+
+```python
+from tsim.core.graph import prepare_graph
+
+prepared = prepare_graph(circuit, sample_detectors=False)
+print(f"Components: {len(prepared.components)}")
+```
+
+Each component is sampled independently, reducing complexity.
+
+### Horizontal Scaling
+
+For wide circuits, tsim can scale ZX diagrams horizontally:
+
+```python
+diagram = circuit.diagram(type='pyzx', scale_horizontally=2.0)
+```
+
+This spreads out vertices for better visualization (doesn't affect computation).
+
+## Visualizing ZX Graphs
+
+### Basic ZX Diagram
+
+```python
+circuit = tsim.Circuit('''
+    H 0
+    T 0
+    CNOT 0 1
+''')
+
+# Show the ZX diagram
+diagram = circuit.diagram(type='pyzx')
+diagram  # Displays in Jupyter
+```
+
+### Sampling Graph for Measurements
+
+```python
+# Show the graph used for sampling measurements
+diagram = circuit.diagram(type='pyzx-meas')
+```
+
+### Sampling Graph for Detectors
+
+```python
+circuit = tsim.Circuit('''
+    H 0
+    CNOT 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+''')
+
+# Show the graph used for sampling detectors
+diagram = circuit.diagram(type='pyzx-dets')
+```
+
+<Tip>
+ZX diagrams show the simplified graph after rewrite rules have been applied. Green vertices are Z-spiders, red vertices are X-spiders.
+</Tip>
+
+## Theoretical Foundations
+
+### Key Papers
+
+1. **Sutcliffe and Kissinger (2025)**: ["Simulating quantum circuits with stabilizer rank decomposition"](https://arxiv.org/abs/2403.06777)
+   - Introduces the ZX-calculus stabilizer rank approach
+   - Shows how to compile to efficient sampling
+   - Demonstrates GPU acceleration
+
+2. **Coecke and Duncan (2011)**: "Interacting quantum observables: categorical algebra and diagrammatics"
+   - Foundational ZX-calculus paper
+   - Defines the graphical calculus
+
+3. **Bravyi and Gosset (2016)**: "Improved classical simulation of quantum circuits dominated by Clifford gates"
+   - Stabilizer rank decomposition for T gates
+   - χ-state simulation
+
+### Comparison to Other Methods
+
+| Method | Non-Clifford Support | Complexity | GPU Friendly |
+|--------|---------------------|------------|-------------|
+| **Stim** | ❌ Clifford only | O(n²) per shot | ✅ |
+| **Tableau Simulation** | ❌ Clifford only | O(n²) per gate | ❌ |
+| **State Vector** | ✅ All gates | O(2ⁿ) | ✅ |
+| **Tensor Network** | ✅ All gates | O(χ³ · poly(n)) | ⚠️ |
+| **Tsim (ZX-calculus)** | ✅ Non-Clifford | O(2^k · poly(n)) | ✅ |
+
+Tsim occupies a sweet spot:
+- Supports non-Clifford gates (unlike Stim)
+- Efficient for low T-count circuits (unlike state vector)
+- GPU-accelerated batching (unlike tableau)
+- Graphical simplification reduces effective cost
+
+## Practical Implications
+
+### When to Use Tsim
+
+Tsim excels when:
+- Circuit has **few non-Clifford gates** (T-count ≤ 20-30)
+- Need **many samples** (GPU batching is efficient)
+- Require **Pauli noise** modeling
+- Working with **stabilizer codes** (detectors/observables)
+
+### When to Use Alternatives
+
+- **Pure Clifford circuits**: Use Stim (faster for Clifford-only)
+- **High T-count** (>50): Consider tensor networks or state vector
+- **Arbitrary gates**: Use general state vector simulators
+- **Small shot counts**: Compilation overhead may dominate
+
+### Performance Tips
+
+1. **Minimize T-count**: Each T gate increases stabilizer rank
+2. **Use batch sampling**: Compile once, sample many times
+3. **Enable GPU**: `pip install "bloqade-tsim[cuda13]"`
+4. **Increase batch size**: Utilize GPU memory fully
+5. **Simplify circuits**: Remove redundant gates before compilation
+
+```python
+# Good: Compile once, sample many times
+sampler = circuit.compile_detector_sampler()
+for i in range(100):
+    samples = sampler.sample(shots=1000, batch_size=4096)
+
+# Bad: Recompiling wastes time
+for i in range(100):
+    sampler = circuit.compile_detector_sampler()
+    samples = sampler.sample(shots=1000)
+```
+
+## Advanced Topics
+
+### Custom ZX Transformations
+
+You can access and manipulate ZX graphs directly:
+
+```python
+import pyzx_param as zx
+
+# Get the graph
+graph = circuit.get_graph()
+
+# Apply custom simplifications
+zx.clifford_simp(graph)
+zx.pivot_simp(graph)
+zx.lcomp_simp(graph)
+
+# Convert to tensor
+tensor = graph.to_tensor()
+```
+
+### Phase Parameter Extraction
+
+For parametric circuits, extract phase information:
+
+```python
+from tsim.core.parse import parse_parametric_tag
+
+# Check if an instruction is parametric
+tag = "R_X(theta=0.5*pi)"
+parsed = parse_parametric_tag(tag)
+
+if parsed:
+    gate_name, params = parsed
+    print(f"Gate: {gate_name}, theta: {params['theta']}")  
+```
+
+### Error Basis Analysis
+
+```python
+from tsim.core.graph import prepare_graph
+
+prepared = prepare_graph(circuit, sample_detectors=False)
+
+print(f"Error channels: {len(prepared.channel_probs)}")
+print(f"Error bits: {prepared.num_error_bits}")
+print(f"Error transform: {prepared.error_transform.shape}")
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Circuits" icon="microchip" href="/concepts/circuits">
+    Build circuits for ZX-calculus simulation
+  </Card>
+  <Card title="Samplers" icon="dice" href="/concepts/samplers">
+    Compile and run efficient samplers
+  </Card>
+  <Card title="Development" icon="code" href="/guides/gpu-acceleration">
+    Contribute to tsim's ZX implementation
+  </Card>
+</CardGroup>

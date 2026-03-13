@@ -1,0 +1,212 @@
+---
+title: Migrating from Stim to tsim
+description: Learn how to migrate your existing Stim projects to tsim and understand key differences
+---
+
+tsim is designed to feel just like [Stim](https://github.com/quantumlib/Stim), with the added capability of supporting non-Clifford gates like T gates and arbitrary rotations. For many existing scripts, replacing `stim` with `tsim` should just work.
+
+## Quick Migration
+
+The simplest migration path is to replace your import statement:
+
+```python
+# Before
+import stim
+
+# After
+import tsim
+```
+
+tsim mirrors the Stim API and currently supports all [Stim gates](https://github.com/quantumlib/Stim/wiki/Stim-v1.9-Gate-Reference).
+
+## Key Differences
+
+While tsim maintains API compatibility with Stim, there are important behavioral differences to be aware of:
+
+### Non-Deterministic Detectors
+
+The most important difference is how tsim handles detector samples:
+
+- **Stim**: Reports detection *flips* (detection samples XORed with a noiseless reference sample)
+- **tsim**: Reports actual detector samples directly
+
+This means the same circuit will produce different output values:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    X 0
+    M 0
+    DETECTOR rec[-1]
+    """
+)
+sampler = c.compile_detector_sampler()
+samples = sampler.sample(shots=100)
+print(samples)
+# tsim: Will report True values
+# Stim: Would report False values
+```
+
+**Migration Tip**: If you're comparing tsim results with Stim reference data, remember to account for this difference in how detector samples are reported.
+
+### Supported Gates
+
+tsim supports all Stim gates **plus** additional non-Clifford instructions:
+
+- `T` and `T_DAG` - T gates (π/4 phase rotations)
+- `R_X`, `R_Y`, `R_Z` - Arbitrary axis rotations
+- `U3` - General single-qubit unitary
+
+See the [Non-Clifford Gates guide](/guides/non-clifford-gates) for details on these additional gates.
+
+## Common Migration Scenarios
+
+### Scenario 1: Basic Circuit Sampling
+
+No changes needed - tsim is a drop-in replacement:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    H 0
+    CNOT 0 1
+    M 0 1
+    """
+)
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=1000)
+```
+
+### Scenario 2: Detector Sampling
+
+The API is identical, but remember the detector output difference:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0
+    R 1
+    T 0
+    PAULI_CHANNEL_1(0.1, 0.1, 0.2) 0 1
+    H 0
+    CNOT 0 1
+    DEPOLARIZE2(0.01) 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+    """
+)
+detector_sampler = c.compile_detector_sampler()
+samples = detector_sampler.sample(shots=100)
+```
+
+### Scenario 3: Using Detector Error Models
+
+tsim circuits can generate detector error models using the same API:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0
+    R 1
+    CNOT 0 1
+    X_ERROR(0.01) 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+    """
+)
+# Generate detector error model
+dem = c.detector_error_model()
+```
+
+Note that tsim supports non-deterministic observables when generating detector error models. See the source at `src/tsim/noise/dem.py` for implementation details.
+
+## Performance Considerations
+
+### When to Use tsim
+
+Use tsim when:
+- You need non-Clifford gates (T gates, rotations)
+- Your circuit has manageable stabilizer rank
+- You want GPU acceleration for sampling
+
+### When to Stick with Stim
+
+Stim may be faster for:
+- Pure Clifford circuits without T gates
+- Circuits with very high qubit counts and only Clifford operations
+
+### Stabilizer Rank
+
+tsim uses stabilizer rank decomposition via ZX-calculus. As such, tsim can simulate hundreds of qubits, **as long as the circuit does not have too many non-Clifford instructions**. The computational cost grows exponentially with the number of T gates and other non-Clifford operations.
+
+## Noise Models
+
+tsim supports all Stim noise channels:
+
+- `DEPOLARIZE1(p)` and `DEPOLARIZE2(p)` - Depolarizing noise
+- `PAULI_CHANNEL_1(px, py, pz)` - Single-qubit Pauli channels
+- `PAULI_CHANNEL_2(...)` - Two-qubit Pauli channels
+- `X_ERROR(p)`, `Y_ERROR(p)`, `Z_ERROR(p)` - Single-Pauli errors
+- `CORRELATED_ERROR(...)` - Correlated error mechanisms
+
+See the [Noise Models guide](/guides/noise-models) for detailed examples.
+
+## Debugging Tips
+
+### Comparing Results
+
+When migrating, you can compare Clifford-only circuits between Stim and tsim. Remember to account for the detector sampling difference:
+
+```python
+import stim
+import tsim
+
+# Same circuit in both
+circuit_str = """
+    H 0
+    CNOT 0 1
+    M 0 1
+"""
+
+stim_circuit = stim.Circuit(circuit_str)
+tsim_circuit = tsim.Circuit(circuit_str)
+
+# Compare measurement distributions
+stim_samples = stim_circuit.compile_sampler().sample(1000)
+tsim_samples = tsim_circuit.compile_sampler().sample(1000)
+```
+
+### Validating Detector Error Models
+
+Both Stim and tsim can generate detector error models, which you can compare for Clifford circuits:
+
+```python
+stim_dem = stim_circuit.detector_error_model()
+tsim_dem = tsim_circuit.detector_error_model()
+```
+
+## API Compatibility
+
+tsim maintains compatibility with the core Stim API:
+
+- `Circuit()` - Circuit construction
+- `compile_sampler()` - Create measurement sampler
+- `compile_detector_sampler()` - Create detector sampler
+- `detector_error_model()` - Generate DEM
+- `sample()` - Sample from compiled circuits
+
+See the [API Reference](/api/circuit) for complete documentation.
+
+## Next Steps
+
+- Explore [Non-Clifford Gates](/guides/non-clifford-gates) to take advantage of tsim's extended gate set
+- Learn about [GPU Acceleration](/guides/gpu-acceleration) to speed up sampling
+- Review [Noise Models](/guides/noise-models) for error simulation capabilities

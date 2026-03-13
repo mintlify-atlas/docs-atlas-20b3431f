@@ -1,80 +1,259 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get up and running with tsim in minutes
 ---
 
-## Get started in three steps
+tsim is a GPU-accelerated quantum circuit sampler that feels just like [Stim](https://github.com/quantumlib/Stim), but supports non-Clifford gates through ZX-calculus stabilizer rank decomposition.
 
-Get your documentation site running locally and make your first customization.
+## Your First Circuit
 
-### Step 1: Set up your local environment
+Let's create a simple quantum circuit with Clifford gates, non-Clifford gates, and noise:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Import tsim">
+    ```python
+    import tsim
+    ```
+  </Step>
+  
+  <Step title="Create a circuit">
+    Create a circuit using Stim's program text format:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```python
+    circuit = tsim.Circuit("""
+        H 0          # Hadamard on qubit 0
+        T 0          # T gate (non-Clifford!)
+        CNOT 0 1     # Controlled-NOT
+        M 0 1        # Measure both qubits
+    """)
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    <Info>
+    tsim supports all [Stim gates](https://github.com/quantumlib/Stim/wiki/Stim-v1.9-Gate-Reference) plus non-Clifford gates like `T`, `T_DAG`, `R_X`, `R_Y`, `R_Z`, and `U3`.
+    </Info>
+  </Step>
+  
+  <Step title="Compile the circuit">
+    Compile the circuit into a sampler:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```python
+    sampler = circuit.compile_sampler()
+    ```
+    
+    <Note>
+    Compilation may take a moment as tsim builds the ZX-calculus representation and performs stabilizer rank decomposition.
+    </Note>
+  </Step>
+  
+  <Step title="Sample measurements">
+    Generate samples from the circuit:
+    
+    ```python
+    samples = sampler.sample(shots=100)
+    print(samples)
+    # Output: 2D array of shape (100, 2) with measurement outcomes
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Complete Example
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Here's a complete example showing tsim's key features:
 
-### Step 3: Go live
+```python
+import tsim
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+# Create a circuit with Clifford gates, non-Clifford gates, and noise
+c = tsim.Circuit("""
+    H 0
+    T 0                      # Non-Clifford T gate
+    CNOT 0 1
+    PAULI_CHANNEL_1(0.1, 0.1, 0.2) 0 1  # Pauli noise
+    DEPOLARIZE2(0.01) 0 1    # Two-qubit depolarizing noise
+    M 0 1                    # Measure qubits
+    DETECTOR rec[-1] rec[-2] # Define a detector
+""")
 
-## Next steps
+# Compile and sample measurements
+measurement_sampler = c.compile_sampler()
+measurements = measurement_sampler.sample(shots=100)
 
-Now that you have your docs running, explore these key features:
+print(f"Measurement samples shape: {measurements.shape}")
+print(f"First 5 samples:\n{measurements[:5]}")
+```
+
+## Sampling Detectors
+
+For quantum error correction, you'll often want to sample detectors instead of raw measurements:
+
+```python
+import tsim
+
+# Circuit with detectors
+c = tsim.Circuit("""
+    X 0
+    M 0
+    DETECTOR rec[-1]
+""")
+
+# Compile detector sampler
+detector_sampler = c.compile_detector_sampler()
+detector_samples = detector_sampler.sample(shots=100)
+
+print(detector_samples)
+```
+
+<Warning>
+tsim reports actual detector samples, not detection flips! In the example above, tsim returns `True` values because the X gate flips the qubit before measurement. Stim would return `False` (no flip from the noiseless reference).
+</Warning>
+
+## Using Non-Clifford Gates
+
+tsim's superpower is supporting non-Clifford gates efficiently:
+
+<CodeGroup>
+```python T and T_DAG gates
+import tsim
+
+c = tsim.Circuit("""
+    H 0
+    T 0       # T gate: π/4 phase rotation
+    T_DAG 1   # T† gate: -π/4 phase rotation
+    M 0 1
+""")
+
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=100)
+```
+
+```python Rotation gates
+import tsim
+
+c = tsim.Circuit("""
+    R_X(0.5) 0   # Rotate around X by π/2
+    R_Y(0.25) 1  # Rotate around Y by π/4
+    R_Z(1.0) 2   # Rotate around Z by π
+    M 0 1 2
+""")
+
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=100)
+```
+
+```python U3 gate
+import tsim
+
+# General single-qubit unitary
+c = tsim.Circuit("""
+    U3(0.5, 0.25, 0.125) 0
+    M 0
+""")
+
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=100)
+```
+
+```python Programmatic construction
+import tsim
+
+# Build circuits programmatically
+c = tsim.Circuit()
+c.append("H", 0)
+c.append("T", 0)
+c.append("CNOT", [0, 1])
+c.append("M", [0, 1])
+
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=100)
+```
+</CodeGroup>
+
+<Tip>
+Rotation gate parameters are specified as multiples of π. For example, `R_X(0.5)` rotates by 0.5π = π/2.
+</Tip>
+
+## Migrating from Stim
+
+If you have existing Stim code, tsim is designed to be a drop-in replacement:
+
+```python
+# Before (Stim)
+import stim
+c = stim.Circuit("...")
+sampler = c.compile_sampler()
+samples = sampler.sample(100)
+
+# After (tsim)
+import tsim
+c = tsim.Circuit("...")  # Same syntax!
+sampler = c.compile_sampler()
+samples = sampler.sample(100)
+```
+
+The main difference: tsim supports non-Clifford gates and returns actual detector samples (not flips).
+
+## Circuit Properties
+
+Query useful information about your circuit:
+
+```python
+import tsim
+
+c = tsim.Circuit("""
+    H 0
+    T 0
+    CNOT 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+""")
+
+print(f"Number of qubits: {c.num_qubits}")
+print(f"Number of measurements: {c.num_measurements}")
+print(f"Number of detectors: {c.num_detectors}")
+print(f"T-count: {c.tcount()}")
+```
+
+## Random Seeds
+
+For reproducible sampling, specify a random seed:
+
+```python
+import tsim
+
+c = tsim.Circuit("""
+    H 0
+    CNOT 0 1
+    M 0 1
+""")
+
+# Reproducible sampling
+sampler = c.compile_sampler(seed=42)
+samples1 = sampler.sample(shots=100)
+samples2 = sampler.sample(shots=100)
+
+# samples1 and samples2 will be different, but
+# re-creating the sampler with seed=42 gives the same sequence
+sampler2 = c.compile_sampler(seed=42)
+samples3 = sampler2.sample(shots=100)
+# samples3 == samples1 ✓
+```
+
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Core Concepts" icon="book" href="/concepts/circuits">
+    Learn about ZX-calculus and stabilizer rank decomposition
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/circuit">
+    Explore the complete API documentation
+  </Card>
+  
+  <Card title="Advanced Usage" icon="rocket" href="/guides/non-clifford-gates">
+    Detector error models, circuit diagrams, and more
+  </Card>
+  
+  <Card title="Examples" icon="flask" href="/examples">
+    See tsim in action with real-world examples
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

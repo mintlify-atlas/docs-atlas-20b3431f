@@ -1,0 +1,559 @@
+---
+title: 'tsim.noise'
+description: 'Noise and error modeling for quantum circuits'
+---
+
+The `tsim.noise` module provides infrastructure for modeling Pauli noise channels and generating detector error models for quantum error correction.
+
+## Overview
+
+This module contains:
+- **channels**: Pauli noise channels and efficient error sampling
+- **dem**: Detector error model generation for QEC decoders
+
+---
+
+## tsim.noise.channels
+
+Pauli noise channels and error sampling infrastructure.
+
+### Channel
+
+```python
+@dataclass
+class Channel:
+    probs: np.ndarray           # shape (2^k,), dtype float64
+    unique_col_ids: tuple[int, ...]
+```
+
+A probability distribution over error outcomes.
+
+**Attributes:**
+- `probs`: Probability array summing to 1, shape `(2^k,)` for k error bits
+- `unique_col_ids`: Tuple of column IDs, where each ID corresponds to a bit of the channel
+
+**Properties:**
+- `num_bits`: Number of bits in the channel (k where probs has shape 2^k)
+
+**Source:** [channels.py:11](/home/daytona/workspace/source/src/tsim/noise/channels.py#L11)
+
+---
+
+### ChannelSampler
+
+```python
+class ChannelSampler:
+    def __init__(
+        self,
+        channel_probs: list[np.ndarray],
+        error_transform: np.ndarray,
+        seed: int | None = None,
+    )
+```
+
+Samples from multiple error channels and transforms to a reduced basis.
+
+Combines multiple error channels (producing error bits e0, e1, ...) and applies a linear transformation over GF(2) to convert samples to a reduced "f" basis:
+
+```
+f_i = error_transform[i,j] * e_j mod 2
+```
+
+Uses geometric-skip sampling optimized for low-noise regimes.
+
+**Automatic Simplifications:**
+1. Removes bits e_i that don't affect any f-variable (all-zero columns)
+2. Merges channels with identical column signatures
+3. Absorbs channels whose signatures are subsets of others
+
+**Parameters:**
+- `channel_probs`: List of probability arrays. Channel i has shape `(2^k_i,)` and produces k_i error bits
+- `error_transform`: Binary matrix of shape `(num_f, num_e)` where `[i, j] = 1` means f_i depends on e_j
+- `seed`: Random seed for sampling
+
+**Example:**
+```python
+# Two single-bit channels
+probs = [error_probs(0.1), error_probs(0.2)]
+# f0 = e0 XOR e1
+transform = np.array([[1, 1]])
+sampler = ChannelSampler(probs, transform)
+samples = sampler.sample(1000)  # shape (1000, 1)
+```
+
+**Source:** [channels.py:380](/home/daytona/workspace/source/src/tsim/noise/channels.py#L380)
+
+---
+
+#### ChannelSampler.sample
+
+```python
+def sample(self, num_samples: int = 1) -> np.ndarray
+```
+
+Sample from all error channels and transform to new error basis.
+
+Uses geometric-skip sampling, optimized for low-noise regimes where P(non-identity) is much less than 1 per channel.
+
+**Parameters:**
+- `num_samples`: Number of samples to draw
+
+**Returns:** NumPy array of shape `(num_samples, num_f)` with uint8 values indicating which f-variables are set
+
+**Algorithm:** Geometric-skip sampling
+1. For each channel with fire probability p:
+   - Draw geometric random variates to skip identity outcomes
+   - For non-identity outcomes, sample from conditional distribution
+   - XOR contributions into output array
+2. Repeat for all channels
+
+**Performance:** O(n · p) where n is number of samples and p is total error probability
+
+**Source:** [channels.py:498](/home/daytona/workspace/source/src/tsim/noise/channels.py#L498)
+
+---
+
+### Channel Probability Functions
+
+#### error_probs
+
+```python
+def error_probs(p: float) -> np.ndarray
+```
+
+Single-bit error channel.
+
+**Returns:** Array `[1-p, p]` of shape `(2,)`
+
+**Source:** [channels.py:30](/home/daytona/workspace/source/src/tsim/noise/channels.py#L30)
+
+---
+
+#### pauli_channel_1_probs
+
+```python
+def pauli_channel_1_probs(px: float, py: float, pz: float) -> np.ndarray
+```
+
+Single-qubit Pauli channel.
+
+**Order:** `[I, Z, X, Y]` mapped to bits `[00, 01, 10, 11]`
+
+**Returns:** Array of shape `(4,)` with probabilities:
+```python
+[1 - px - py - pz,  # I (identity)
+ pz,                 # Z error
+ px,                 # X error  
+ py]                 # Y error
+```
+
+**Source:** [channels.py:35](/home/daytona/workspace/source/src/tsim/noise/channels.py#L35)
+
+---
+
+#### pauli_channel_2_probs
+
+```python
+def pauli_channel_2_probs(
+    pix: float, piy: float, piz: float,
+    pxi: float, pxx: float, pxy: float, pxz: float,
+    pyi: float, pyx: float, pyy: float, pyz: float,
+    pzi: float, pzx: float, pzy: float, pzz: float,
+) -> np.ndarray
+```
+
+Two-qubit Pauli channel.
+
+**Returns:** Array of shape `(16,)` with probabilities for all 16 two-qubit Pauli errors
+
+**Order:** Errors ordered as `(Z_error_q1, X_error_q1, Z_error_q2, X_error_q2)` in binary
+
+**Source:** [channels.py:43](/home/daytona/workspace/source/src/tsim/noise/channels.py#L43)
+
+---
+
+#### correlated_error_probs
+
+```python
+def correlated_error_probs(probabilities: list[float]) -> np.ndarray
+```
+
+Build probability distribution for correlated error chain.
+
+Given conditional probabilities `[p1, p2, ..., pk]` from a chain of `CORRELATED_ERROR(p1) ELSE_CORRELATED_ERROR(p2) ...`, computes the joint distribution.
+
+**Mutual Exclusivity:** Only outcomes with at most one bit set have non-zero probability:
+- `P(0) = (1-p1)(1-p2)...(1-pk)` (no error)
+- `P(2^i) = (1-p1)...(1-p_{i}) * p_{i+1}` (error i+1 occurred)
+
+**Parameters:**
+- `probabilities`: List of conditional probabilities `[p1, p2, ..., pk]`
+
+**Returns:** Array of shape `(2^k,)` with probabilities for each outcome
+
+**Source:** [channels.py:103](/home/daytona/workspace/source/src/tsim/noise/channels.py#L103)
+
+---
+
+### Channel Operations
+
+#### xor_convolve
+
+```python
+def xor_convolve(probs_a: np.ndarray, probs_b: np.ndarray) -> np.ndarray
+```
+
+XOR convolution of two probability distributions.
+
+Computes `P(A XOR B = o) = sum_{a ^ b = o} P(A=a) * P(B=b)`
+
+**Parameters:**
+- `probs_a`: Shape `(2^k,)` probabilities for channel A
+- `probs_b`: Shape `(2^k,)` probabilities for channel B (same size as A)
+
+**Returns:** Shape `(2^k,)` probabilities for the combined channel
+
+**Complexity:** O(n²) where n = 2^k. Could be optimized to O(n log n) using Walsh-Hadamard transform, but unnecessary for typical small k ≤ 4.
+
+**Source:** [channels.py:134](/home/daytona/workspace/source/src/tsim/noise/channels.py#L134)
+
+---
+
+#### simplify_channels
+
+```python
+def simplify_channels(
+    channels: list[Channel],
+    max_bits: int = 4,
+    null_col_id: int | None = None
+) -> list[Channel]
+```
+
+Simplify channels by removing null columns, merging identical, and absorbing subsets.
+
+**Process:**
+1. Remove null bits (all-zero columns)
+2. Normalize by sorting column IDs
+3. Merge channels with identical signatures
+4. Absorb subset channels into supersets
+
+**Parameters:**
+- `channels`: List of channels to simplify
+- `max_bits`: Maximum number of bits allowed per channel
+- `null_col_id`: Column ID representing all-zero column, or None
+
+**Returns:** Simplified list of channels
+
+**Source:** [channels.py:358](/home/daytona/workspace/source/src/tsim/noise/channels.py#L358)
+
+---
+
+<Accordion title="reduce_null_bits">
+
+```python
+def reduce_null_bits(
+    channels: list[Channel], 
+    null_col_id: int | None = None
+) -> list[Channel]
+```
+
+Remove bits corresponding to the null column (all-zero column).
+
+If a channel has bits mapped to `null_col_id`, those bits don't affect any f-variable and can be marginalized out by summing.
+
+**Returns:** List of channels with null bits marginalized out. Channels with all null entries are removed entirely.
+
+**Source:** [channels.py:163](/home/daytona/workspace/source/src/tsim/noise/channels.py#L163)
+
+</Accordion>
+
+<Accordion title="normalize_channels">
+
+```python
+def normalize_channels(channels: list[Channel]) -> list[Channel]
+```
+
+Normalize channels by sorting `unique_col_ids`, permuting `probs` accordingly.
+
+Ensures channels affecting the same set of columns have identical `unique_col_ids` tuples, enabling `merge_identical_channels` to group them.
+
+**Source:** [channels.py:212](/home/daytona/workspace/source/src/tsim/noise/channels.py#L212)
+
+</Accordion>
+
+<Accordion title="merge_identical_channels">
+
+```python
+def merge_identical_channels(channels: list[Channel]) -> list[Channel]
+```
+
+Merge all channels with identical signature sets.
+
+Groups channels by their `unique_col_ids` and convolves all channels in each group into a single channel.
+
+**Source:** [channels.py:276](/home/daytona/workspace/source/src/tsim/noise/channels.py#L276)
+
+</Accordion>
+
+<Accordion title="expand_channel">
+
+```python
+def expand_channel(channel: Channel, target_col_ids: tuple[int, ...]) -> Channel
+```
+
+Expand a channel's distribution to a larger signature set.
+
+The channel's existing col_ids must be a strict subset of `target_col_ids`. New bit positions are treated as "don't care" (always 0).
+
+**Source:** [channels.py:241](/home/daytona/workspace/source/src/tsim/noise/channels.py#L241)
+
+</Accordion>
+
+<Accordion title="absorb_subset_channels">
+
+```python
+def absorb_subset_channels(
+    channels: list[Channel], 
+    max_bits: int = 4
+) -> list[Channel]
+```
+
+Absorb channels whose signatures are subsets of others.
+
+If channel A's signatures are a strict subset of channel B's signatures, and |B| ≤ max_bits, then A is absorbed into B.
+
+**Source:** [channels.py:310](/home/daytona/workspace/source/src/tsim/noise/channels.py#L310)
+
+</Accordion>
+
+---
+
+## tsim.noise.dem
+
+Detector error model generation for QEC decoder integration.
+
+### get_detector_error_model
+
+```python
+def get_detector_error_model(
+    stim_circuit: stim.Circuit,
+    *,
+    allow_non_deterministic_observables: bool = True,
+    decompose_errors: bool = False,
+    flatten_loops: bool = False,
+    allow_gauge_detectors: bool = False,
+    approximate_disjoint_errors: bool = False,
+    ignore_decomposition_failures: bool = False,
+    block_decomposition_from_introducing_remnant_edges: bool = False,
+) -> stim.DetectorErrorModel
+```
+
+Return a `stim.DetectorErrorModel` describing error processes in the circuit.
+
+**Key Feature:** Unlike `stim.Circuit.detector_error_model()`, this method allows non-deterministic observables by converting them to detectors, calling the stim method with `allow_gauge_detectors=True`, then reconverting.
+
+**Warning:** If the circuit has distance one (errors that only flip logical observables), this method will return an incorrect detector error model.
+
+**Parameters:**
+
+<Accordion title="allow_non_deterministic_observables">
+
+**Type:** `bool`  
+**Default:** `True`
+
+When true, allows non-deterministic observables. Achieved by:
+1. Converting logical observables into detectors
+2. Calling `stim.Circuit.detector_error_model(allow_gauge_detectors=True)`
+3. Reconverting detectors back to observables in the DEM
+
+</Accordion>
+
+<Accordion title="decompose_errors">
+
+**Type:** `bool`  
+**Default:** `False`
+
+When true, attempts to decompose composite error mechanisms into simpler errors, suggested via `stim.target_separator()`. For example, Y errors decompose into X and Z.
+
+Decomposition fails if it's not possible to decompose large errors into simple errors affecting at most two detectors.
+
+**Not supported** when `allow_non_deterministic_observables=True`.
+
+</Accordion>
+
+<Accordion title="flatten_loops">
+
+**Type:** `bool`  
+**Default:** `False`
+
+When true, output will not contain any `repeat` blocks. When false, the error analysis watches for loops reaching a periodic steady state and outputs repeat blocks.
+
+Massively more efficient for circuits with loops, but creates more complex output.
+
+Irrelevant unless `allow_non_deterministic_observables=False`.
+
+</Accordion>
+
+<Accordion title="allow_gauge_detectors">
+
+**Type:** `bool`  
+**Default:** `False`
+
+When false, verifies that detectors are deterministic under noiseless execution. When true, considers them as degrees of freedom that can be removed.
+
+For example, if detectors D1 and D3 both anti-commute with a reset, the error model has a gauge `error(0.5) D1 D3`. One detector is removed via Gaussian elimination.
+
+Logical observables are still verified to be deterministic.
+
+</Accordion>
+
+<Accordion title="approximate_disjoint_errors">
+
+**Type:** `bool | float`  
+**Default:** `False`
+
+When false, composite error mechanisms with disjoint components cause exceptions. When true, probabilities of disjoint cases are assumed independent.
+
+For example, `PAULI_CHANNEL_1(0.1, 0.2, 0.0)` becomes equivalent to `X_ERROR(0.1)` followed by `Z_ERROR(0.2)`.
+
+Can also be set to a probability threshold (0 to 1). Errors above the threshold cause an exception.
+
+</Accordion>
+
+<Accordion title="ignore_decomposition_failures">
+
+**Type:** `bool`  
+**Default:** `False`
+
+When true, circuit errors that fail to decompose into graphlike DEM errors no longer abort the process. Instead, undecomposed errors are inserted into the output.
+
+Irrelevant unless `decompose_errors=True`.
+
+</Accordion>
+
+<Accordion title="block_decomposition_from_introducing_remnant_edges">
+
+**Type:** `bool`  
+**Default:** `False`
+
+Requires both A B and C D be present elsewhere in the DEM to decompose A B C D into A B ^ C D. Normally, only one needs to appear.
+
+Remnant edges ensure decomposition succeeds but can reduce effective code distance by giving the decoder single edges representing multiple errors.
+
+Irrelevant unless `decompose_errors=True`.
+
+</Accordion>
+
+**Returns:** `stim.DetectorErrorModel` describing the error processes
+
+**Example:**
+```python
+import stim
+from tsim.noise.dem import get_detector_error_model
+
+circuit = stim.Circuit("""
+    R 0 1
+    H 0
+    CNOT 0 1
+    DEPOLARIZE2(0.01) 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+""")
+
+dem = get_detector_error_model(
+    circuit,
+    allow_non_deterministic_observables=True,
+    approximate_disjoint_errors=True
+)
+```
+
+**Source:** [dem.py:8](/home/daytona/workspace/source/src/tsim/noise/dem.py#L8)
+
+---
+
+## Usage Examples
+
+### Example 1: Basic Channel Sampling
+
+```python
+import numpy as np
+from tsim.noise.channels import ChannelSampler, error_probs
+
+# Define error channels: two qubits with 1% and 2% X errors
+probs = [error_probs(0.01), error_probs(0.02)]
+
+# Error transform: measure X1 XOR X2
+transform = np.array([[1, 1]], dtype=np.uint8)
+
+# Create sampler
+sampler = ChannelSampler(probs, transform, seed=42)
+
+# Sample 10000 shots
+samples = sampler.sample(10000)
+
+# Check empirical probability
+p_error = np.mean(samples)
+print(f"Empirical error rate: {p_error:.4f}")
+# Expected: 0.01 + 0.02 - 2*0.01*0.02 = 0.0296
+```
+
+### Example 2: Correlated Errors
+
+```python
+from tsim.noise.channels import correlated_error_probs, Channel
+
+# Correlated error chain: 10% chance of X1, else 5% chance of X2
+probs = correlated_error_probs([0.10, 0.05])
+# probs = [0.855, 0.095, 0.050, 0.000]
+#          [no error, X1, X2, both]
+
+channel = Channel(probs=probs, unique_col_ids=(0, 1))
+```
+
+### Example 3: Detector Error Model for Surface Code
+
+```python
+import stim
+from tsim.noise.dem import get_detector_error_model
+
+# Distance-3 surface code
+circuit = stim.Circuit.generated(
+    "surface_code:rotated_memory_x",
+    distance=3,
+    rounds=3,
+    after_clifford_depolarization=0.001
+)
+
+# Get DEM for decoder
+dem = get_detector_error_model(
+    circuit,
+    allow_non_deterministic_observables=True,
+    decompose_errors=True,
+    approximate_disjoint_errors=0.001
+)
+
+print(f"DEM has {dem.num_detectors} detectors")
+print(f"DEM has {dem.num_observables} observables")
+print(f"DEM has {len(list(dem))} error mechanisms")
+```
+
+### Example 4: Channel Simplification
+
+```python
+import numpy as np
+from tsim.noise.channels import (
+    Channel, simplify_channels, error_probs
+)
+
+# Create redundant channels
+ch1 = Channel(error_probs(0.01), unique_col_ids=(0,))
+ch2 = Channel(error_probs(0.02), unique_col_ids=(0,))  # same column!
+ch3 = Channel(error_probs(0.03), unique_col_ids=(1,))
+
+# Simplify: ch1 and ch2 will be merged
+simplified = simplify_channels([ch1, ch2, ch3])
+
+print(f"Original: {len([ch1, ch2, ch3])} channels")
+print(f"Simplified: {len(simplified)} channels")
+# Output: 2 channels (merged ch1+ch2, and ch3)
+```

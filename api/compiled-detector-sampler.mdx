@@ -1,0 +1,296 @@
+---
+title: "CompiledDetectorSampler"
+description: "API reference for CompiledDetectorSampler"
+---
+
+## Overview
+
+The `CompiledDetectorSampler` class provides efficient sampling of detector and observable outcomes from quantum circuits. It is designed for quantum error correction simulations where detectors flag error syndromes and observables track logical qubit states.
+
+<Note>
+  For circuits without detectors, use [`CompiledMeasurementSampler`](/api/compiled-measurement-sampler) instead.
+</Note>
+
+## Constructor
+
+### CompiledDetectorSampler
+
+```python
+CompiledDetectorSampler(circuit: Circuit, *, seed: int | None = None)
+```
+
+Create a detector sampler from a quantum circuit.
+
+<ParamField path="circuit" type="Circuit" required>
+  The quantum circuit to compile. Must contain DETECTOR instructions.
+</ParamField>
+
+<ParamField path="seed" type="int | None" default="None">
+  Random seed for JAX random number generation. If None, a random seed is generated automatically.
+</ParamField>
+
+**Example:**
+```python
+import tsim
+
+circuit = tsim.Circuit("""
+    R 0 1 2
+    X 2
+    M 0 1 2
+    DETECTOR rec[-2]
+    DETECTOR rec[-3]
+    OBSERVABLE_INCLUDE(0) rec[-1]
+""")
+
+sampler = tsim.CompiledDetectorSampler(circuit, seed=42)
+```
+
+<Tip>
+  You can also create a sampler using the [`Circuit.compile_detector_sampler()`](/api/circuit#compile_detector_sampler) method:
+  ```python
+  sampler = circuit.compile_detector_sampler(seed=42)
+  ```
+</Tip>
+
+## Methods
+
+### sample
+
+```python
+# Return detectors only (default)
+sample(
+    shots: int,
+    *,
+    batch_size: int | None = None,
+    prepend_observables: bool = False,
+    append_observables: bool = False,
+    separate_observables: Literal[False] = False,
+    bit_packed: bool = False
+) -> np.ndarray
+
+# Return (detectors, observables) tuple
+sample(
+    shots: int,
+    *,
+    batch_size: int | None = None,
+    prepend_observables: bool = False,
+    append_observables: bool = False,
+    separate_observables: Literal[True],
+    bit_packed: bool = False
+) -> tuple[np.ndarray, np.ndarray]
+```
+
+Sample detector and observable outcomes from the circuit.
+
+<ParamField path="shots" type="int" required>
+  The number of times to sample every detector in the circuit
+</ParamField>
+
+<ParamField path="batch_size" type="int | None" default="None">
+  The number of samples to process in each batch. When using a GPU, increase this value until VRAM is fully utilized for maximum performance.
+</ParamField>
+
+<ParamField path="separate_observables" type="bool" default="False">
+  When True, returns a tuple `(detection_events, observable_flips)` instead of a flat array
+</ParamField>
+
+<ParamField path="prepend_observables" type="bool" default="False">
+  When True, observables are included and placed at the start of the results
+</ParamField>
+
+<ParamField path="append_observables" type="bool" default="False">
+  When True, observables are included and placed at the end of the results
+</ParamField>
+
+<ParamField path="bit_packed" type="bool" default="False">
+  When True, results are bit-packed using numpy's packbits with little-endian bit order
+</ParamField>
+
+**Returns:** 
+- If `separate_observables=False`: numpy array of shape `(shots, num_detectors)` or with observables appended/prepended
+- If `separate_observables=True`: tuple of `(detectors, observables)` arrays
+
+**Example - Basic detector sampling:**
+```python
+import tsim
+import numpy as np
+
+circuit = tsim.Circuit("""
+    R 0 1 2
+    X 2
+    M 0 1 2
+    DETECTOR rec[-2]
+    DETECTOR rec[-3]
+    OBSERVABLE_INCLUDE(0) rec[-1]
+""")
+
+sampler = circuit.compile_detector_sampler()
+
+# Sample detectors only (default)
+detections = sampler.sample(shots=1)
+assert np.array_equal(detections, np.array([[0, 0]]))
+```
+
+**Example - Including observables:**
+```python
+# Append observables to detector results
+results = sampler.sample(shots=1, append_observables=True)
+assert np.array_equal(results, np.array([[0, 0, 1]]))
+
+# Prepend observables
+results = sampler.sample(shots=1, prepend_observables=True)
+assert np.array_equal(results, np.array([[1, 0, 0]]))
+
+# Separate detectors and observables
+detections, observables = sampler.sample(shots=1, separate_observables=True)
+assert np.array_equal(detections, np.array([[0, 0]]))
+assert np.array_equal(observables, np.array([[1]]))
+```
+
+**Example - Bit packing:**
+```python
+# Bit-pack results for space efficiency
+packed = sampler.sample(shots=100, bit_packed=True)
+# Shape is now (100, ceil(num_detectors / 8))
+```
+
+**Example - Batch size optimization:**
+```python
+# For GPU usage - larger batches
+detections = sampler.sample(shots=100000, batch_size=10000)
+
+# For CPU usage - smaller batches
+detections = sampler.sample(shots=100000, batch_size=1024)
+```
+
+## Reproducibility
+
+The sampler produces deterministic results when initialized with the same seed:
+
+```python
+import numpy as np
+import tsim
+
+circuit = tsim.Circuit("""
+    H 0
+    M 0
+    DETECTOR rec[-1]
+""")
+
+# First sampler
+sampler1 = circuit.compile_detector_sampler(seed=0)
+samples1 = sampler1.sample(100)
+
+# Second sampler with same seed
+sampler2 = circuit.compile_detector_sampler(seed=0)
+samples2 = sampler2.sample(100)
+
+# Results are identical
+assert np.array_equal(samples1, samples2)
+```
+
+## Implementation Details
+
+### Sequential Decomposition
+
+The sampler uses sequential decomposition where:
+- `compiled_scalar_graphs[0]`: normalization (0 outputs)
+- `compiled_scalar_graphs[i]`: cumulative probability up to bit i
+
+This enables efficient autoregressive sampling of detectors and observables.
+
+### Compilation Statistics
+
+The string representation provides detailed compilation statistics:
+
+```python
+sampler = circuit.compile_detector_sampler()
+print(sampler)
+# CompiledDetectorSampler(24 graphs, 5 error channel bits,
+#   3 outputs for largest cc, ≤ 8 parameters, 312 A terms,
+#   56 B terms, 24 C terms, 16 D terms, 8.4 kB)
+```
+
+These statistics include:
+- Number of compiled graphs
+- Number of error channel bits (from noise)
+- Maximum outputs in connected components  
+- Graph complexity metrics (A/B/C/D terms)
+- Total memory usage
+
+## Attributes
+
+### circuit
+
+```python
+circuit: Circuit
+```
+
+The original circuit that was compiled.
+
+## Working with Detectors
+
+Detectors are defined using the `DETECTOR` instruction in Stim:
+
+```python
+circuit = tsim.Circuit("""
+    # Initialize qubits in |+⟩ state
+    H 0 1
+    
+    # Apply noise
+    X_ERROR(0.1) 0 1
+    
+    # Measure in X basis
+    H 0 1
+    M 0 1
+    
+    # Define stabilizer detector
+    # Fires (=1) when measurements disagree
+    DETECTOR rec[-1] rec[-2]
+""")
+
+sampler = circuit.compile_detector_sampler()
+detections = sampler.sample(shots=1000)
+
+# Count how often the detector fired
+error_rate = np.mean(detections)
+print(f"Detector fired {error_rate:.1%} of the time")
+```
+
+## Working with Observables
+
+Observables track the state of logical qubits:
+
+```python
+circuit = tsim.Circuit("""
+    # Initialize logical |0⟩
+    R 0 1 2
+    
+    # Apply logical X (bit flip)
+    X 0 1 2
+    
+    # Measure
+    M 0 1 2
+    
+    # Logical X observable (parity of all qubits)
+    OBSERVABLE_INCLUDE(0) rec[-1] rec[-2] rec[-3]
+""")
+
+sampler = circuit.compile_detector_sampler()
+
+# Get observables separately
+detections, observables = sampler.sample(
+    shots=1,
+    separate_observables=True
+)
+
+print(f"Logical state: |{observables[0, 0]}⟩")
+# Output: Logical state: |1⟩
+```
+
+## See Also
+
+- [`Circuit`](/api/circuit) - The quantum circuit class
+- [`CompiledMeasurementSampler`](/api/compiled-measurement-sampler) - For sampling measurements
+- [Samplers Concepts](/concepts/samplers) - Learn more about detector sampling
+- [Stim Documentation](https://github.com/quantumlib/Stim) - Learn about DETECTOR and OBSERVABLE_INCLUDE

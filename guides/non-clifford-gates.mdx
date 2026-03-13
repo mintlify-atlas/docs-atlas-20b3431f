@@ -1,0 +1,309 @@
+---
+title: Non-Clifford Gates
+description: Use T gates, arbitrary rotations, and general unitaries with tsim
+---
+
+tsim extends the Stim gate set with support for non-Clifford gates, enabling simulation of Clifford+T circuits and arbitrary single-qubit rotations. This guide covers the additional gates available in tsim.
+
+## Overview
+
+While Stim is limited to Clifford gates, tsim supports:
+
+- **T gates** (`T`, `T_DAG`) - π/4 phase rotations
+- **Rotation gates** (`R_X`, `R_Y`, `R_Z`) - Arbitrary single-axis rotations
+- **General unitaries** (`U3`) - Arbitrary single-qubit gates
+
+All of these gates can be mixed with Clifford operations and noise channels in the same circuit.
+
+## T Gates
+
+The T gate applies a π/4 phase rotation. It's the most common non-Clifford gate in quantum error correction.
+
+### Matrix Definitions
+
+$$
+T =
+\left(
+\begin{array}{cc}
+1 & 0 \\
+0 & e^{i\pi/4}
+\end{array}
+\right),
+\quad
+T^\dagger =
+\left(
+\begin{array}{cc}
+1 & 0 \\
+0 & e^{-i\pi/4}
+\end{array}
+\right)
+$$
+
+### Usage
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    H 0
+    T 0
+    H 0
+    M 0
+    """
+)
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=1000)
+```
+
+### Multi-Qubit Application
+
+Apply T gates to multiple qubits in a single instruction:
+
+```python
+c = tsim.Circuit(
+    """
+    T 0 1 2  # Apply T to qubits 0, 1, and 2
+    T_DAG 0  # Apply T† to qubit 0
+    """
+)
+```
+
+## Rotation Gates
+
+Rotation gates perform arbitrary-angle rotations around the X, Y, or Z axis. The rotation angle is specified as θ = α·π, where α is the parameter.
+
+### R_Z: Z-Axis Rotation
+
+Rotates around the Z-axis by angle θ = α·π.
+
+$$
+R_Z(\alpha) =
+\left(
+\begin{array}{cc}
+e^{-i\alpha\pi/2} & 0 \\
+0 & e^{i\alpha\pi/2}
+\end{array}
+\right)
+$$
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    R_Z(0.5) 0   # Rotate by π/2 (equivalent to S gate)
+    R_Z(0.25) 1  # Rotate by π/4 (equivalent to T gate)
+    R_Z(1.0) 2   # Rotate by π (equivalent to Z gate)
+    M 0 1 2
+    """
+)
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=1000)
+```
+
+### R_X: X-Axis Rotation
+
+Rotates around the X-axis by angle θ = α·π.
+
+$$
+R_X(\alpha) =
+\left(
+\begin{array}{cc}
+\cos(\alpha\pi/2) & -i \sin(\alpha\pi/2) \\
+-i \sin(\alpha\pi/2) & \cos(\alpha\pi/2)
+\end{array}
+\right)
+$$
+
+```python
+c = tsim.Circuit(
+    """
+    R_X(0.5) 0   # Rotate by π/2 (equivalent to √X)
+    R_X(1.0) 1   # Rotate by π (equivalent to X gate)
+    M 0 1
+    """
+)
+```
+
+### R_Y: Y-Axis Rotation
+
+Rotates around the Y-axis by angle θ = α·π.
+
+$$
+R_Y(\alpha) =
+\left(
+\begin{array}{cc}
+\cos(\alpha\pi/2) & -\sin(\alpha\pi/2) \\
+\sin(\alpha\pi/2) & \cos(\alpha\pi/2)
+\end{array}
+\right)
+$$
+
+```python
+c = tsim.Circuit(
+    """
+    R_Y(0.25) 0  # Rotate by π/4 around Y
+    R_Y(1.0) 1   # Rotate by π (equivalent to Y gate)
+    M 0 1
+    """
+)
+```
+
+## U3 Gate: General Single-Qubit Unitary
+
+The U3 gate represents an arbitrary single-qubit unitary using three parameters (θ, φ, λ), each specified as multiples of π.
+
+### Matrix Definition
+
+$$
+U_3(\theta, \phi, \lambda) =
+\left(
+\begin{array}{cc}
+\cos(\theta\pi/2) & -e^{i\lambda\pi}\sin(\theta\pi/2) \\
+e^{i\phi\pi}\sin(\theta\pi/2) & e^{i(\phi+\lambda)\pi}\cos(\theta\pi/2)
+\end{array}
+\right)
+$$
+
+### Usage
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    U3(0.5, 0.25, 0.125) 0  # θ=π/2, φ=π/4, λ=π/8
+    M 0
+    """
+)
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=1000)
+```
+
+### Common Gates as U3
+
+Many standard gates can be expressed using U3:
+
+```python
+# X gate = U3(1, 0, 1)
+U3(1, 0, 1) 0
+
+# Y gate = U3(1, 0.5, 0.5) 0
+U3(1, 0.5, 0.5) 0
+
+# Hadamard ≈ U3(0.5, 0, 1) with global phase
+U3(0.5, 0, 1) 0
+```
+
+## Combining with Clifford Gates
+
+Non-Clifford gates can be freely mixed with Clifford operations:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    # Prepare Bell state
+    H 0
+    CNOT 0 1
+    
+    # Apply T gates
+    T 0
+    T_DAG 1
+    
+    # More Clifford operations
+    CNOT 0 1
+    H 0
+    
+    # Arbitrary rotation
+    R_Z(0.3) 0
+    
+    M 0 1
+    """
+)
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=1000)
+```
+
+## Working with Noise
+
+Non-Clifford gates work seamlessly with noise channels:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0
+    T 0
+    DEPOLARIZE1(0.01) 0  # Add depolarizing noise after T
+    R_Z(0.3) 0
+    PAULI_CHANNEL_1(0.005, 0.005, 0.01) 0  # Pauli noise
+    M 0
+    """
+)
+sampler = c.compile_sampler()
+samples = sampler.sample(shots=1000)
+```
+
+See the [Noise Models guide](/guides/noise-models) for more details on noise channels.
+
+## Detector Sampling with Non-Clifford Gates
+
+Non-Clifford gates work with detector annotations:
+
+```python
+import tsim
+
+c = tsim.Circuit(
+    """
+    RX 0
+    R 1
+    T 0
+    PAULI_CHANNEL_1(0.1, 0.1, 0.2) 0 1
+    H 0
+    CNOT 0 1
+    DEPOLARIZE2(0.01) 0 1
+    M 0 1
+    DETECTOR rec[-1] rec[-2]
+    """
+)
+detector_sampler = c.compile_detector_sampler()
+samples = detector_sampler.sample(shots=100)
+```
+
+## Performance Considerations
+
+### Stabilizer Rank
+
+tsim uses stabilizer rank decomposition to simulate non-Clifford circuits. The computational cost grows exponentially with the number of non-Clifford operations:
+
+- **Clifford gates**: No increase in computational cost
+- **Each T gate**: Can double the stabilizer rank (worst case)
+- **Rotation gates**: Similar cost to T gates
+
+tsim can efficiently simulate hundreds of qubits, **as long as the circuit does not have too many non-Clifford instructions** (typically dozens of T gates).
+
+### Optimization Tips
+
+1. **Minimize T-depth**: Organize circuits to minimize the number of T-gate layers
+2. **Use Clifford gates when possible**: Replace `R_Z(0.5)` with `S` for better performance
+3. **Batch sampling**: Use high shot counts (`shots=10000`) for amortized performance
+
+## Implementation Details
+
+Non-Clifford gates are represented as parametrized vertices in the ZX-graph representation. See the source implementation:
+
+- T gates: `src/tsim/core/instructions.py:110-118`
+- Rotation gates: `src/tsim/core/instructions.py:120-137`
+- U3 gate: `src/tsim/core/instructions.py:139-151`
+
+The ZX-calculus simplification rules help reduce stabilizer rank before sampling.
+
+## Next Steps
+
+- Learn about [Noise Models](/guides/noise-models) to add realistic errors
+- Explore [GPU Acceleration](/guides/gpu-acceleration) for faster sampling
+- See [API Reference](/api/circuit) for complete gate documentation

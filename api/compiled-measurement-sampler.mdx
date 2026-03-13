@@ -1,0 +1,168 @@
+---
+title: "CompiledMeasurementSampler"
+description: "API reference for CompiledMeasurementSampler"
+---
+
+## Overview
+
+The `CompiledMeasurementSampler` class provides efficient sampling of measurement outcomes from quantum circuits. It uses a compiled representation of the circuit with sequential decomposition for autoregressive sampling.
+
+<Note>
+  For circuits with detectors, use [`CompiledDetectorSampler`](/api/compiled-detector-sampler) instead.
+</Note>
+
+## Constructor
+
+### CompiledMeasurementSampler
+
+```python
+CompiledMeasurementSampler(circuit: Circuit, *, seed: int | None = None)
+```
+
+Create a measurement sampler from a quantum circuit.
+
+<ParamField path="circuit" type="Circuit" required>
+  The quantum circuit to compile for sampling
+</ParamField>
+
+<ParamField path="seed" type="int | None" default="None">
+  Random seed for JAX random number generation. If None, a random seed is generated automatically.
+</ParamField>
+
+**Example:**
+```python
+import tsim
+
+circuit = tsim.Circuit("""
+    H 0
+    CNOT 0 1
+    M 0 1
+""")
+
+sampler = tsim.CompiledMeasurementSampler(circuit, seed=42)
+```
+
+<Tip>
+  You can also create a sampler using the [`Circuit.compile_sampler()`](/api/circuit#compile_sampler) method:
+  ```python
+  sampler = circuit.compile_sampler(seed=42)
+  ```
+</Tip>
+
+## Methods
+
+### sample
+
+```python
+sample(shots: int, *, batch_size: int = 1024) -> np.ndarray
+```
+
+Sample measurement outcomes from the circuit.
+
+<ParamField path="shots" type="int" required>
+  The number of times to sample every measurement in the circuit
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="1024">
+  The number of samples to process in each batch. When using a GPU, increase this value until VRAM is fully utilized for maximum performance.
+</ParamField>
+
+**Returns:** A numpy array of shape `(shots, num_measurements)` containing boolean measurement outcomes
+
+**Example:**
+```python
+import tsim
+import numpy as np
+
+circuit = tsim.Circuit("""
+    H 0
+    M 0
+""")
+
+sampler = circuit.compile_sampler(seed=0)
+samples = sampler.sample(shots=100)
+
+# Count number of 1s in the first measurement
+num_ones = np.count_nonzero(samples[:, 0])
+print(f"Measured |1⟩ {num_ones} times out of 100")
+# Output: Measured |1⟩ ~50 times out of 100
+```
+
+**Performance Tip:**
+
+When using a GPU, increase `batch_size` to maximize throughput:
+
+```python
+# For GPU usage
+samples = sampler.sample(shots=100000, batch_size=10000)
+
+# For CPU usage (smaller batches may be more efficient)
+samples = sampler.sample(shots=100000, batch_size=1024)
+```
+
+## Implementation Details
+
+### Sequential Decomposition
+
+The sampler uses sequential decomposition where:
+- `compiled_scalar_graphs[0]`: normalization (0 outputs)
+- `compiled_scalar_graphs[i]`: cumulative probability up to bit i
+
+This enables efficient autoregressive sampling using the chain rule of probability.
+
+### Compilation Statistics
+
+The string representation of the sampler provides detailed compilation statistics:
+
+```python
+sampler = circuit.compile_sampler()
+print(sampler)
+# CompiledMeasurementSampler(12 graphs, 2 error channel bits, 
+#   2 outputs for largest cc, ≤ 4 parameters, 156 A terms, 
+#   28 B terms, 12 C terms, 8 D terms, 4.2 kB)
+```
+
+These statistics include:
+- Number of compiled graphs
+- Number of error channel bits (from noise)
+- Maximum outputs in connected components
+- Graph complexity metrics (A/B/C/D terms)
+- Total memory usage
+
+## Attributes
+
+### circuit
+
+```python
+circuit: Circuit
+```
+
+The original circuit that was compiled.
+
+## Reproducibility
+
+The sampler produces deterministic results when initialized with the same seed:
+
+```python
+import numpy as np
+import tsim
+
+circuit = tsim.Circuit("H 0\nM 0")
+
+# First sampler
+sampler1 = circuit.compile_sampler(seed=0)
+samples1 = sampler1.sample(100)
+
+# Second sampler with same seed
+sampler2 = circuit.compile_sampler(seed=0)
+samples2 = sampler2.sample(100)
+
+# Results are identical
+assert np.array_equal(samples1, samples2)
+```
+
+## See Also
+
+- [`Circuit`](/api/circuit) - The quantum circuit class
+- [`CompiledDetectorSampler`](/api/compiled-detector-sampler) - For sampling detectors and observables
+- [Samplers Concepts](/concepts/samplers) - Learn more about sampling from circuits
